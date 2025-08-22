@@ -11,8 +11,13 @@ from legged_gym.utils import  get_args, export_policy_as_jit, task_registry, Log
 import numpy as np
 import torch
 
+from legged_gym.utils import webviewer
 
 def play(args):
+    if args.web:
+        web_viewer = webviewer.WebViewer()
+    
+    
     env_cfg, train_cfg = task_registry.get_cfgs(name=args.task)
     # override some parameters for testing
     env_cfg.env.num_envs = min(env_cfg.env.num_envs, 100)
@@ -28,6 +33,10 @@ def play(args):
     # prepare environment
     env, _ = task_registry.make_env(name=args.task, args=args, env_cfg=env_cfg)
     obs = env.get_observations()
+
+    if args.web:
+        web_viewer.setup(env)
+    
     # load policy
     train_cfg.runner.resume = True
     ppo_runner, train_cfg = task_registry.make_alg_runner(env=env, name=args.task, args=args, train_cfg=train_cfg)
@@ -42,6 +51,11 @@ def play(args):
     for i in range(10*int(env.max_episode_length)):
         actions = policy(obs.detach())
         obs, _, rews, dones, infos = env.step(actions.detach())
+        if args.web:
+            web_viewer.render(fetch_results=True,
+                        step_graphics=True,
+                        render_all_camera_sensors=True,
+                        wait_for_page_load=True)
 
 if __name__ == '__main__':
     EXPORT_POLICY = True
