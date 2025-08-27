@@ -5,6 +5,62 @@
   </p>
 </div>
 
+### CPSL GO2 repo
+This is the repo for GHN repo for go2 deployment useful resources / Only will use Gym (No Mujoco)
+
+https://github.com/chengxuxin/extreme-parkour
+
+https://github.com/WooQi57/Helpful-Doggybot
+
+
+use these two repos are reference as if ther are more pls add more. This repo will later be uploaded to the CPSL Go2 repo.
+
+Currently this repo is very messy requires cleaning up for future work. (PLS work on this as we write this code)
+
+IMPORTANT
+
+BE VERY CAREFUL OF THE UNITREE GO2 DOG CONTORL HYPERPARAMTERS (if wrong correct them responsibly)
+
+ 
+
+ ## Repository Structure
+  - **go2_config.py** - Robot parameters, rewards, terrain settings
+  - **go2_env.py** - Environment with depth camera integration (from Helpful Doggy)
+
+  ### Key Components
+
+  **Configuration (`go2_config.py`)**
+  - Reward scaling for forward movement and wall avoidance
+  - Camera setup (64x64 depth, 87° FOV, 3m range)
+  - 100 parallel environments for training
+
+  **Environment (`go2_env.py`)**
+  - Depth camera processing and collision detection
+  - Visual RL integration with camera mounting
+  - Extends base LeggedRobot with vision capabilities
+  - `check_camera` variable has been used to display the images of the robot 0 depth camera (this has to be revised to be fed to the arguement for future)
+
+  **Terrain System (`utils/terrain.py`)**
+  - Wall generation for dodging scenarios
+  - Trimesh terrain support for complex obstacles
+
+  **Visual Policy (`rsl_rl/modules/`)**
+  - VisualActorCritic for depth image processing
+  - CNN encoder for visual feature extraction
+  - Actor-critic architecture with shared vision backbone
+
+
+
+  ## Usage
+  ```bash
+  python train.py --task=go2  # Train with visual input
+  python play.py --task=go2   # Test trained policy
+ ```
+
+
+
+
+
 <p align="center">
   <strong>This is a repository for reinforcement learning implementation based on Unitree robots, supporting Unitree Go2, H1, H1_2, and G1.</strong> 
 </p>
