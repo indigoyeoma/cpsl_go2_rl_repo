@@ -60,14 +60,10 @@ rsl_rl/
 ## Quick Start
 
 ### Installation
-```bash
-# Clone repository
-git clone <repo-url>
-cd go2_rl
 
-# Install dependencies  
-pip install -r requirements.txt
-```
+use the unitree_rl_gym installatoin but use the following
+
+pip install torch==1.12.1+cu113 torchvision==0.13.1+cu113 -f https://download.pytorch.org/whl/torch_stable.html
 
 ### Training
 ```bash
