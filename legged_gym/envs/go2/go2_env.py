@@ -22,6 +22,10 @@ class GO2Robot(LeggedRobot):
             )
         
         super().__init__(cfg, sim_params, physics_engine, sim_device, headless)
+        
+        # Update noise scale vector after initialization to account for depth observations
+        if cfg.depth.use_camera:
+            self.noise_scale_vec = self._get_noise_scale_vec(self.cfg)
     
     def create_sim(self):
         """Creates simulation with trimesh terrain and camera support"""
@@ -204,31 +208,30 @@ class GO2Robot(LeggedRobot):
     
     def show_depth_image(self, robot_id=0):
         """Display depth image from robot's camera for debugging"""
-        # Use current depth_image instead of depth_buffer
-        if hasattr(self, 'depth_image') and self.depth_image is not None:
-            # pass
-            depth_image = self.depth_image[robot_id].cpu().numpy()
-            
-            # Debug info
-            print(f"Depth image stats: min={depth_image.min():.3f}, max={depth_image.max():.3f}, mean={depth_image.mean():.3f}")
-        elif hasattr(self, 'depth_buffer') and self.depth_buffer is not None:
-            
-            depth_image = self.depth_buffer[robot_id, -1].cpu().numpy()
-            
-            # Debug info
-            print(f"Depth buffer stats: min={depth_image.min():.3f}, max={depth_image.max():.3f}, mean={depth_image.mean():.3f}")
-        else:
-            print(f"No depth data available. Has depth_image: {hasattr(self, 'depth_image')}, Has depth_buffer: {hasattr(self, 'depth_buffer')}")
+        if not self.cfg.depth.use_camera or not hasattr(self, 'cam_handles') or robot_id >= len(self.cam_handles):
+            print(f"Camera not available for robot {robot_id}")
             return None
             
-        # Better normalization - handle the actual depth range
-        depth_normalized = depth_image.copy()
+        # Get current depth image directly from camera
+        self.gym.step_graphics(self.sim)
+        self.gym.render_all_camera_sensors(self.sim)
+        self.gym.start_access_image_tensors(self.sim)
         
-        # Convert from normalized [-0.5, 0.5] back to actual depth
-        actual_depths = (depth_normalized + 0.5) * (self.cfg.depth.far_clip - self.cfg.depth.near_clip) + self.cfg.depth.near_clip
+        depth_tensor = self.gym.get_camera_image_gpu_tensor(
+            self.sim,
+            self.envs[robot_id], 
+            self.cam_handles[robot_id],
+            gymapi.IMAGE_DEPTH
+        )
+        depth_image = gymtorch.wrap_tensor(depth_tensor).cpu().numpy()
         
-        # Normalize for display (0 = near/close, 255 = far)
-        depth_display = ((actual_depths - self.cfg.depth.near_clip) / (self.cfg.depth.far_clip - self.cfg.depth.near_clip) * 255).astype(np.uint8)
+        self.gym.end_access_image_tensors(self.sim)
+        
+        # Debug info
+        print(f"Depth image stats: min={depth_image.min():.3f}, max={depth_image.max():.3f}, mean={depth_image.mean():.3f}")
+        
+        # Simple normalization for display
+        depth_display = np.clip(-depth_image * 255 / self.cfg.depth.far_clip, 0, 255).astype(np.uint8)
         depth_display = cv2.resize(depth_display, (320, 240))
         
         cv2.imshow(f'GO2 Robot {robot_id} Depth Camera - Live Training Feed', depth_display)
@@ -236,10 +239,7 @@ class GO2Robot(LeggedRobot):
         return depth_image
     
     def step(self, actions):
-        """Override step to update depth image and show live camera feed during training"""
-        # Update single depth frame before physics step
-        self.update_single_depth_frame()
-        
+        """Override step to show live camera feed during training"""
         result = super().step(actions)
         
         # Show depth camera at same rate as GUI rendering
@@ -248,87 +248,63 @@ class GO2Robot(LeggedRobot):
             
         return result
     
-    def update_single_depth_frame(self):
-        """Get current depth image from camera - GPU optimized batch processing"""
-        if not self.cfg.depth.use_camera or not hasattr(self, 'cam_handles'):
-            return
-            
-        self.gym.step_graphics(self.sim)
-        self.gym.render_all_camera_sensors(self.sim)
-        self.gym.start_access_image_tensors(self.sim)
+    def compute_observations(self):
+        """Override to include depth features in observations"""
+        # Compute base observations without noise (copy from base class)
+        self.obs_buf = torch.cat((  self.base_lin_vel * self.obs_scales.lin_vel,
+                                    self.base_ang_vel  * self.obs_scales.ang_vel,
+                                    self.projected_gravity,
+                                    self.commands[:, :3] * self.commands_scale,
+                                    (self.dof_pos - self.default_dof_pos) * self.obs_scales.dof_pos,
+                                    self.dof_vel * self.obs_scales.dof_vel,
+                                    self.actions
+                                    ),dim=-1)
         
-        # Collect all GPU tensors first (stay on GPU)
-        depth_tensors = []
-        for i in range(min(self.num_envs, len(self.cam_handles))):
-            depth_image_ = self.gym.get_camera_image_gpu_tensor(self.sim, 
-                                                                self.envs[i], 
-                                                                self.cam_handles[i],
-                                                                gymapi.IMAGE_DEPTH)
-            depth_tensors.append(gymtorch.wrap_tensor(depth_image_))
-        
-        # Batch process all images on GPU at once
-        if depth_tensors:
-            # Stack all images into a single batch tensor
-            batch_depth = torch.stack(depth_tensors, dim=0)  # [N, H, W]
-            # Process entire batch on GPU
-            self.depth_image = self.process_depth_batch_gpu(batch_depth)
-        
-        self.gym.end_access_image_tensors(self.sim)
-    
-    def process_depth_batch_gpu(self, batch_depth):
-        """GPU-optimized batch processing of depth images"""
-        # Batch operations on GPU - all at once
-        # Crop all images: remove bottom 11 pixels, 4 from each side
-        batch_depth = batch_depth[:, :-11, 4:-4]
-        
-        # Invert and clip all depths at once
-        batch_depth = torch.clip(batch_depth * -1, self.cfg.depth.near_clip, self.cfg.depth.far_clip)
-        
-        # Batch resize using interpolate (more efficient than transform)
-        batch_depth = batch_depth.unsqueeze(1)  # Add channel dim [N, 1, H, W]
-        batch_depth = torch.nn.functional.interpolate(
-            batch_depth, 
-            size=(self.cfg.depth.resized[1], self.cfg.depth.resized[0]),
-            mode='bilinear',
-            align_corners=False
-        )
-        batch_depth = batch_depth.squeeze(1)  # Remove channel dim [N, H, W]
-        
-        # Normalize entire batch
-        batch_depth = (batch_depth - self.cfg.depth.near_clip) / (self.cfg.depth.far_clip - self.cfg.depth.near_clip) - 0.5
-        
-        return batch_depth
-    
-    def process_depth_image_simple(self, depth_image):
-        """Simple depth processing - kept for compatibility"""
-        # Crop edges
-        depth_image = depth_image[:-11, 4:-4]
-        
-        # Clip to valid range
-        depth_image = torch.clip(depth_image * -1, self.cfg.depth.near_clip, self.cfg.depth.far_clip)
-        
-        # Resize if needed
-        if hasattr(self, 'resize_transform'):
-            depth_image = self.resize_transform(depth_image[None, :]).squeeze()
-        
-        # Normalize to [-0.5, 0.5]
-        depth_image = (depth_image - self.cfg.depth.near_clip) / (self.cfg.depth.far_clip - self.cfg.depth.near_clip) - 0.5
-        
-        return depth_image
-    
-    
-    def _init_buffers(self):
-        """Override to initialize depth buffer for camera"""
-        super()._init_buffers()
-        
+        # Add depth images if using camera
         if self.cfg.depth.use_camera:
-            self.depth_buffer = torch.zeros(self.num_envs,  
-                                          self.cfg.depth.buffer_len,
-                                          self.cfg.depth.resized[1], 
-                                          self.cfg.depth.resized[0], 
-                                          dtype=torch.float, 
-                                          device=self.device,
-                                          requires_grad=False)
+            self.gym.step_graphics(self.sim)
+            self.gym.render_all_camera_sensors(self.sim)
+            self.gym.start_access_image_tensors(self.sim)
+            
+            depth_images = []
+            for i in range(self.num_envs):
+                if i < len(self.cam_handles):
+                    # Get depth image directly from camera
+                    depth_tensor = self.gym.get_camera_image_gpu_tensor(
+                        self.sim,
+                        self.envs[i], 
+                        self.cam_handles[i],
+                        gymapi.IMAGE_DEPTH
+                    )
+                    depth_image = gymtorch.wrap_tensor(depth_tensor)
+                    
+                    # Clean up depth image - replace inf/nan with camera range values
+                    near_clip = self.cfg.depth.near_clip  # 0.3m
+                    far_clip = self.cfg.depth.far_clip    # 3.0m
+                    
+                    # Clamp to camera depth range
+                    depth_image = torch.clamp(depth_image, min=-far_clip, max=far_clip)
+                    # Replace nan/inf with valid depth values within camera range
+                    depth_image = torch.nan_to_num(depth_image, nan=far_clip, posinf=far_clip, neginf=near_clip)
+                    
+                    # Resize to 64x64 if needed, then flatten immediately
+                    if hasattr(self, 'resize_transform'):
+                        depth_image = self.resize_transform(depth_image.unsqueeze(0)).squeeze(0)
+                    
+                    # Flatten: [64, 64] → [4096]
+                    depth_flat = depth_image.view(-1)
+                    depth_images.append(depth_flat)
+            
+            self.gym.end_access_image_tensors(self.sim)
+            
+            if depth_images:
+                # Stack and add to observations: [N, 4096] 
+                depth_batch = torch.stack(depth_images, dim=0)  # [N, 4096]
+                self.obs_buf = torch.cat([self.obs_buf, depth_batch], dim=-1)
+        
+        # Add noise if needed (applied to full observation including depth)
+        if self.add_noise:
+            self.obs_buf += (2 * torch.rand_like(self.obs_buf) - 1) * self.noise_scale_vec
     
     def _create_envs(self):
         """Override to attach cameras when creating environments"""
@@ -340,7 +316,7 @@ class GO2Robot(LeggedRobot):
                 if i < len(self.actor_handles):
                     self.attach_camera_to_robot(i, self.envs[i], self.actor_handles[i])
     
-    def attach_camera_to_robot(self, i, env_handle, actor_handle):
+    def attach_camera_to_robot(self, env_id, env_handle, actor_handle):
         """Attach depth camera to robot with random positioning"""
         config = self.cfg.depth
         camera_props = gymapi.CameraProperties()
@@ -364,51 +340,32 @@ class GO2Robot(LeggedRobot):
         
         self.gym.attach_camera_to_body(camera_handle, env_handle, root_handle, local_transform, gymapi.FOLLOW_TRANSFORM)
     
-    def normalize_depth_image(self, depth_image):
-        """Normalize depth image to [-0.5, 0.5] range"""
-        depth_image = depth_image * -1
-        depth_image = (depth_image - self.cfg.depth.near_clip) / (self.cfg.depth.far_clip - self.cfg.depth.near_clip) - 0.5
-        return depth_image
-    
-    def crop_depth_image(self, depth_image):
-        """Crop depth image by removing edges"""
-        return depth_image[:-11, 4:-4]
+    def _get_noise_scale_vec(self, cfg):
+        """Override to handle depth image noise scaling"""
+        # Set the add_noise attribute (normally set by base class)
+        self.add_noise = cfg.noise.add_noise
         
-    def process_depth_image_legacy(self, depth_image, env_id):
-        """Legacy depth processing method for compatibility"""
-        depth_image = self.crop_depth_image(depth_image)
-        depth_image += self.cfg.depth.dis_noise * 2 * (torch.rand(1)-0.5)[0]
-        depth_image = torch.clip(depth_image, -self.cfg.depth.far_clip, -self.cfg.depth.near_clip)
-        depth_image = self.resize_transform(depth_image[None, :]).squeeze()
-        depth_image = self.normalize_depth_image(depth_image)
-        return depth_image
+        # Create noise vector manually instead of calling super() to avoid size issues
+        noise_vec = torch.zeros(48, device=self.device)  # Base observations only
+        noise_scales = cfg.noise.noise_scales
+        noise_level = cfg.noise.noise_level
         
-    def update_depth_buffer(self):
-        """Update depth buffer for temporal encoding - kept for compatibility"""
-        if not hasattr(self.cfg, 'depth') or not self.cfg.depth.use_camera:
-            return
-        if hasattr(self, 'global_counter') and self.global_counter % self.cfg.depth.update_interval != 0:
-            return
-            
-        self.gym.step_graphics(self.sim)
-        self.gym.render_all_camera_sensors(self.sim)
-        self.gym.start_access_image_tensors(self.sim)
+        # Fill in noise for base observations (same as base class logic)
+        noise_vec[:3] = noise_scales.lin_vel * noise_level * self.obs_scales.lin_vel
+        noise_vec[3:6] = noise_scales.ang_vel * noise_level * self.obs_scales.ang_vel
+        noise_vec[6:9] = noise_scales.gravity * noise_level
+        noise_vec[9:12] = 0.  # commands
+        noise_vec[12:12+self.num_actions] = noise_scales.dof_pos * noise_level * self.obs_scales.dof_pos
+        noise_vec[12+self.num_actions:12+2*self.num_actions] = noise_scales.dof_vel * noise_level * self.obs_scales.dof_vel
+        noise_vec[12+2*self.num_actions:] = noise_scales.dof_pos * noise_level * self.obs_scales.dof_pos
         
-        for i in range(self.num_envs):
-            if i < len(self.cam_handles):
-                depth_image_ = self.gym.get_camera_image_gpu_tensor(self.sim, 
-                                                                    self.envs[i], 
-                                                                    self.cam_handles[i],
-                                                                    gymapi.IMAGE_DEPTH)
-                
-                depth_image = gymtorch.wrap_tensor(depth_image_)
-                depth_image = self.process_depth_image_legacy(depth_image, i)
-                
-                init_flag = hasattr(self, 'episode_length_buf') and self.episode_length_buf[i] <= 1
-                if init_flag:
-                    self.depth_buffer[i] = torch.stack([depth_image] * self.cfg.depth.buffer_len, dim=0)
-                else:
-                    self.depth_buffer[i] = torch.cat([self.depth_buffer[i, 1:], depth_image.to(self.device).unsqueeze(0)], dim=0)
-        
-        self.gym.end_access_image_tensors(self.sim)
-    
+        # If using depth camera, extend noise vector for depth dimensions
+        if cfg.depth.use_camera:
+            depth_size = cfg.depth.resized[0] * cfg.depth.resized[1]  # 64*64 = 4096
+            # Add zero noise for depth images (depth images shouldn't have noise added)
+            depth_noise = torch.zeros(depth_size, device=self.device)
+            # Concatenate: [48 base obs noise + 4096 depth noise (zeros)]
+            result = torch.cat([noise_vec, depth_noise])
+            return result
+        else:
+            return noise_vec

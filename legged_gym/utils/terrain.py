@@ -116,7 +116,7 @@ class Terrain:
             terrain_utils.pyramid_stairs_terrain(terrain, step_width=0.31, step_height=step_height, platform_size=3.)
         elif choice < self.proportions[4]:
             # Use rectangular walls/columns (increased heights for more challenge)
-            num_walls = 7         # More walls for denser obstacle field
+            num_walls = 6         # More walls for denser obstacle field
             wall_height = 0.5
             wall_min_size = 0.4  # 40cm minimum size (slightly smaller)
             wall_max_size = 0.6  # 60cm maximum size (taller rectangles)
