@@ -29,11 +29,15 @@
 # Copyright (c) 2021 ETH Zurich, Nikita Rudin
 
 import numpy as np
+import os
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from torch.distributions import Normal
 from torch.nn.modules import rnn
+
+from rsl_rl.modules.models.simple_cnn import SimpleCNN
 
 USE_2AC = False
 
@@ -279,9 +283,37 @@ class ActorCritic(nn.Module):
         super(ActorCritic, self).__init__()
 
         activation = get_activation(activation)
-
-        mlp_input_dim_a = num_actor_obs
-        mlp_input_dim_c = num_critic_obs
+        
+        # Check if using depth images - depth is always 64x64 = 4096 dimensions
+        self.depth_image_size = 64 * 64  # 4096
+        self.use_depth_actor = num_actor_obs > 48  # If actor obs > 48, we have depth
+        self.use_depth_critic = num_critic_obs > 48  # If critic obs > 48, we have depth
+        
+        if self.use_depth_actor or self.use_depth_critic:
+            # Create observation space wrapper for SimpleCNN
+            class ObservationSpace:
+                def __init__(self, depth_shape):
+                    self.spaces = {"depth": type('obj', (object,), {'shape': (depth_shape[0], depth_shape[1], 1)})}
+            
+            # Shared depth encoder using SimpleCNN
+            obs_space = ObservationSpace((64, 64))
+            depth_latent_dim = 32
+            self.depth_encoder = SimpleCNN(obs_space, depth_latent_dim)
+            print(f"ActorCritic with depth processing - SimpleCNN encoder added")
+        
+        # Calculate actor input dimensions
+        if self.use_depth_actor:
+            self.base_actor_obs_size = num_actor_obs - self.depth_image_size  # 48
+            mlp_input_dim_a = self.base_actor_obs_size + depth_latent_dim  # 48 + 32 = 80
+        else:
+            mlp_input_dim_a = num_actor_obs
+            
+        # Calculate critic input dimensions  
+        if self.use_depth_critic:
+            self.base_critic_obs_size = num_critic_obs - self.depth_image_size  # 48
+            mlp_input_dim_c = self.base_critic_obs_size + depth_latent_dim  # 48 + 32 = 80
+        else:
+            mlp_input_dim_c = num_critic_obs
 
         # Policy
         actor_layers = []
@@ -345,8 +377,49 @@ class ActorCritic(nn.Module):
     def entropy(self):
         return self.distribution.entropy().sum(dim=-1)
 
+    def _extract_depth_from_obs(self, observations, for_critic=False):
+        """Extract depth features from observations buffer"""
+        use_depth = self.use_depth_critic if for_critic else self.use_depth_actor
+        
+        if not use_depth:
+            return observations, None
+        
+        # Split observations: [base_obs, depth_flat]
+        if for_critic:
+            base_obs = observations[:, :self.base_critic_obs_size]  # [B, 48]
+            depth_flat = observations[:, self.base_critic_obs_size:]  # [B, 4096]
+        else:
+            base_obs = observations[:, :self.base_actor_obs_size]  # [B, 48]
+            depth_flat = observations[:, self.base_actor_obs_size:]  # [B, 4096]
+        
+        # Reshape flattened depth back to image format for CNN processing
+        depth_images = depth_flat.view(-1, 64, 64)  # [B, 64, 64]
+        
+        return base_obs, depth_images
+    
+    def _process_depth_image(self, depth_images):
+        """Process depth images for SimpleCNN"""
+        # Convert [batch, H, W] -> [batch, H, W, 1] for SimpleCNN
+        depth_images = depth_images.unsqueeze(-1)  # [B, 64, 64, 1]
+        return {"depth": depth_images}
+    
+    def _encode_depth(self, depth_images):
+        """Encode depth images using shared SimpleCNN encoder"""
+        depth_dict = self._process_depth_image(depth_images)
+        return self.depth_encoder(depth_dict)
+
     def update_distribution(self, observations):
-        mean = self.actor(observations)
+        if self.use_depth_actor:
+            # Extract base observations and depth from observation buffer
+            base_obs, depth_images = self._extract_depth_from_obs(observations, for_critic=False)
+            
+            # Encode depth features using shared encoder
+            depth_features = self._encode_depth(depth_images)
+            actor_input = torch.cat([base_obs, depth_features], dim=1)
+        else:
+            actor_input = observations
+            
+        mean = self.actor(actor_input)
         self.distribution = Normal(mean, mean*0. + self.std)
 
     def act(self, observations, **kwargs):
@@ -357,11 +430,31 @@ class ActorCritic(nn.Module):
         return self.distribution.log_prob(actions).sum(dim=-1)
 
     def act_inference(self, observations):
-        actions_mean = self.actor(observations)
+        if self.use_depth_actor:
+            # Extract base observations and depth from observation buffer
+            base_obs, depth_images = self._extract_depth_from_obs(observations, for_critic=False)
+            
+            # Encode depth features using shared encoder
+            depth_features = self._encode_depth(depth_images)
+            actor_input = torch.cat([base_obs, depth_features], dim=1)
+        else:
+            actor_input = observations
+            
+        actions_mean = self.actor(actor_input)
         return actions_mean
 
     def evaluate(self, critic_observations, **kwargs):
-        value = self.critic(critic_observations)
+        if self.use_depth_critic:
+            # Extract base observations and depth from critic observations
+            base_obs, depth_images = self._extract_depth_from_obs(critic_observations, for_critic=True)
+            
+            # Use same shared encoder for critic
+            depth_features = self._encode_depth(depth_images)
+            critic_input = torch.cat([base_obs, depth_features], dim=1)
+        else:
+            critic_input = critic_observations
+            
+        value = self.critic(critic_input)
         return value
 
 def get_activation(act_name):
@@ -496,5 +589,190 @@ class ActorCriticRMA(nn.Module):
         return value
     
     def reset_std(self, std, num_actions, device):
+        new_std = std * torch.ones(num_actions, device=device)
+        self.std.data = new_std.data
+
+
+class VisualActorCritic(nn.Module):
+    """Actor-Critic for visual RL using single-frame depth images (no temporal buffer)
+    Uses SimpleCNN as the shared depth encoder"""
+    is_recurrent = False
+    
+    def __init__(self,
+                 num_actor_obs,
+                 num_critic_obs,
+                 num_actions,
+                 depth_image_shape=(64, 64),  # [H, W] - always 64x64
+                 depth_latent_dim=32,
+                 actor_hidden_dims=[256, 256, 256],
+                 critic_hidden_dims=[256, 256, 256],
+                 activation='elu',
+                 init_noise_std=1.0,
+                 **kwargs):
+        
+        if kwargs:
+            print("VisualActorCritic.__init__ got unexpected arguments, which will be ignored: "
+                  + str([key for key in kwargs.keys()]))
+        
+        super(VisualActorCritic, self).__init__()
+        
+        self.num_actor_obs = num_actor_obs
+        self.num_critic_obs = num_critic_obs
+        self.depth_latent_dim = depth_latent_dim
+        
+        # Calculate observation splits - depth is always appended at the end: [base_obs, depth_flat]
+        self.depth_image_size = depth_image_shape[0] * depth_image_shape[1]  # 64*64 = 4096
+        self.base_actor_obs_size = num_actor_obs - self.depth_image_size  # 48 
+        self.base_critic_obs_size = num_critic_obs - self.depth_image_size  # 48
+        
+        activation_fn = get_activation(activation)
+        
+        # Create observation space wrapper for SimpleCNN
+        class ObservationSpace:
+            def __init__(self, depth_shape):
+                # SimpleCNN expects [H, W, C] format
+                self.spaces = {"depth": type('obj', (object,), {'shape': (depth_shape[0], depth_shape[1], 1)})}
+        
+        # Shared depth encoder using SimpleCNN - processes resized single frames
+        obs_space = ObservationSpace(depth_image_shape)
+        self.depth_encoder = SimpleCNN(obs_space, depth_latent_dim)
+        print(f"Depth Encoder (SimpleCNN) initialized for {depth_image_shape[0]}x{depth_image_shape[1]} images")
+        print(f"Depth encoder output dim: {depth_latent_dim}")
+        
+        # Actor network: base observations + encoded depth features (always uses depth)
+        actor_input_dim = self.base_actor_obs_size + depth_latent_dim  # 48 + 32 = 80
+            
+        actor_layers = []
+        actor_layers.append(nn.Linear(actor_input_dim, actor_hidden_dims[0]))
+        actor_layers.append(activation_fn)
+        for l in range(len(actor_hidden_dims)):
+            if l == len(actor_hidden_dims) - 1:
+                actor_layers.append(nn.Linear(actor_hidden_dims[l], num_actions))
+            else:
+                actor_layers.append(nn.Linear(actor_hidden_dims[l], actor_hidden_dims[l + 1]))
+                actor_layers.append(activation_fn)
+        self.actor = nn.Sequential(*actor_layers)
+        
+        # Critic network: base observations + encoded depth features (always uses depth)  
+        critic_input_dim = self.base_critic_obs_size + depth_latent_dim  # 48 + 32 = 80
+            
+        critic_layers = []
+        critic_layers.append(nn.Linear(critic_input_dim, critic_hidden_dims[0]))
+        critic_layers.append(activation_fn)
+        for l in range(len(critic_hidden_dims)):
+            if l == len(critic_hidden_dims) - 1:
+                critic_layers.append(nn.Linear(critic_hidden_dims[l], 1))
+            else:
+                critic_layers.append(nn.Linear(critic_hidden_dims[l], critic_hidden_dims[l + 1]))
+                critic_layers.append(activation_fn)
+        self.critic = nn.Sequential(*critic_layers)
+        
+        print(f"Actor MLP: {self.actor}")
+        print(f"Critic MLP: {self.critic}")
+        print(f"Always using depth for both actor and critic")
+        
+        # Action noise
+        self.std = nn.Parameter(init_noise_std * torch.ones(num_actions))
+        self.distribution = None
+        Normal.set_default_validate_args = False
+    
+    def reset(self, dones=None):
+        pass
+    
+    def forward(self):
+        raise NotImplementedError
+    
+    @property
+    def action_mean(self):
+        return self.distribution.mean
+    
+    @property
+    def action_std(self):
+        return self.distribution.stddev
+    
+    @property
+    def entropy(self):
+        return self.distribution.entropy().sum(dim=-1)
+    
+    def _process_depth_image(self, depth_images):
+        """Process depth images for SimpleCNN
+        Args:
+            depth_images: [batch_size, 64, 64] 
+        Returns:
+            depth_dict: Dictionary with 'depth' key for SimpleCNN
+        """
+        # Convert [batch, H, W] -> [batch, H, W, 1] for SimpleCNN
+        depth_images = depth_images.unsqueeze(-1)  # [B, 64, 64, 1]
+        return {"depth": depth_images}
+    
+    def _extract_depth_from_obs(self, observations):
+        """Extract depth features from observations buffer
+        The depth is flattened in obs_buf, we reshape it back to image format for CNN.
+        
+        Args:
+            observations: [batch_size, 4144] = [base_obs(48) + depth_flat(4096)]
+        Returns:
+            base_obs: [batch_size, 48] base observations
+            depth_images: [batch_size, 64, 64] resized depth images
+        """
+        # Split observations: [base_obs, depth_flat]
+        base_obs = observations[:, :self.base_actor_obs_size]  # [B, 48] 
+        depth_flat = observations[:, self.base_actor_obs_size:]  # [B, 4096]
+        
+        # Reshape flattened depth back to image format for CNN processing
+        depth_images = depth_flat.view(-1, 64, 64)  # [B, 64, 64]
+        
+        return base_obs, depth_images
+    
+    def _encode_depth(self, depth_images):
+        """Encode depth images using shared SimpleCNN encoder"""
+        depth_dict = self._process_depth_image(depth_images)
+        return self.depth_encoder(depth_dict)
+    
+    def update_distribution(self, observations, **kwargs):
+        """Update action distribution - extract depth from observations"""
+        # Extract base observations and depth from observation buffer
+        base_obs, depth_images = self._extract_depth_from_obs(observations)
+        
+        # Encode depth features using shared encoder (always used)
+        depth_features = self._encode_depth(depth_images)
+        actor_input = torch.cat([base_obs, depth_features], dim=1)
+        
+        mean = self.actor(actor_input)
+        self.distribution = Normal(mean, mean * 0. + self.std)
+    
+    def act(self, observations, **kwargs):
+        """Sample action from distribution - extract depth from observations"""
+        self.update_distribution(observations)
+        return self.distribution.sample()
+    
+    def get_actions_log_prob(self, actions):
+        """Get log probability of actions"""
+        return self.distribution.log_prob(actions).sum(dim=-1)
+    
+    def act_inference(self, observations, **kwargs):
+        """Get deterministic action for inference - extract depth from observations"""
+        # Extract base observations and depth from observation buffer
+        base_obs, depth_images = self._extract_depth_from_obs(observations)
+        
+        # Encode depth features using shared encoder (always used)
+        depth_features = self._encode_depth(depth_images)
+        actor_input = torch.cat([base_obs, depth_features], dim=1)
+        
+        return self.actor(actor_input)
+    
+    def evaluate(self, critic_observations, **kwargs):
+        """Compute value function - extract depth from critic observations"""
+        # Extract depth from critic observations (same format as actor)
+        base_critic_obs, depth_images = self._extract_depth_from_obs(critic_observations)
+        
+        # Use same shared encoder for critic (always used)
+        depth_features = self._encode_depth(depth_images)
+        critic_input = torch.cat([base_critic_obs, depth_features], dim=1)
+        
+        return self.critic(critic_input)
+    
+    def reset_std(self, std, num_actions, device):
+        """Reset action noise standard deviation"""
         new_std = std * torch.ones(num_actions, device=device)
         self.std.data = new_std.data

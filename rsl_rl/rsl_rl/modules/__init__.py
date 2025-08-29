@@ -28,7 +28,5 @@
 #
 # Copyright (c) 2021 ETH Zurich, Nikita Rudin
 
-from .actor_critic import ActorCritic, ActorCriticRMA
-from .visual_actor_critic import VisualActorCritic
-from .estimator import Estimator
+from .actor_critic import ActorCritic, ActorCriticRMA, VisualActorCritic
 from .actor_critic_recurrent import ActorCriticRecurrent

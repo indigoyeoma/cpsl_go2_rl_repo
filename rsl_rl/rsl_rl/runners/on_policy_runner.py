@@ -35,16 +35,10 @@ import statistics
 
 from torch.utils.tensorboard import SummaryWriter
 import torch
-import torch.optim as optim
-import wandb
-import datetime
 
 from rsl_rl.algorithms import PPO
-from rsl_rl.modules import *
+from rsl_rl.modules import ActorCritic, ActorCriticRecurrent
 from rsl_rl.env import VecEnv
-import sys
-from copy import copy, deepcopy
-import warnings
 
 
 class OnPolicyRunner:
@@ -53,60 +47,30 @@ class OnPolicyRunner:
                  env: VecEnv,
                  train_cfg,
                  log_dir=None,
-                 init_wandb=True,
-                 device='cpu', **kwargs):
+                 device='cpu'):
 
         self.cfg=train_cfg["runner"]
         self.alg_cfg = train_cfg["algorithm"]
         self.policy_cfg = train_cfg["policy"]
-        self.estimator_cfg = train_cfg["estimator"]
         self.device = device
         self.env = env
-
-        if self.cfg["policy_class_name"] == "ActorCriticRMA":
-            print("Using MLP and Privileged Env encoder ActorCritic structure")
-            actor_critic = ActorCriticRMA(self.env.cfg.env.n_proprio,
-                                          self.env.cfg.env.n_scan,
-                                          self.env.num_obs,
-                                          self.env.cfg.env.n_priv_latent,
-                                          self.env.cfg.env.n_priv,
-                                          self.env.cfg.env.history_len,
-                                          self.env.num_actions,
-                                          **self.policy_cfg).to(self.device)
-        elif self.cfg["policy_class_name"] == "VisualActorCritic":
-            print("Using VisualActorCritic for depth-based visual RL")
-            actor_critic = VisualActorCritic(self.env.cfg.env.n_proprio,
-                                           self.env.num_privileged_obs,
-                                           self.env.num_actions,
-                                           **self.policy_cfg).to(self.device)
+        if self.env.num_privileged_obs is not None:
+            num_critic_obs = self.env.num_privileged_obs 
         else:
-            print("Using basic ActorCritic structure")
-            actor_critic = ActorCritic(self.env.num_obs,
-                                       self.env.num_privileged_obs,
-                                       self.env.num_actions,
-                                       **self.policy_cfg).to(self.device)
-        estimator = Estimator(input_dim=env.cfg.env.n_proprio, output_dim=env.cfg.env.n_priv, hidden_dims=self.estimator_cfg["hidden_dims"]).to(self.device)
-            
-        # Create algorithm
+            num_critic_obs = self.env.num_obs
+        actor_critic_class = eval(self.cfg["policy_class_name"]) # ActorCritic
+        actor_critic: ActorCritic = actor_critic_class( self.env.num_obs,
+                                                        num_critic_obs,
+                                                        self.env.num_actions,
+                                                        **self.policy_cfg).to(self.device)
         alg_class = eval(self.cfg["algorithm_class_name"]) # PPO
-        self.alg: PPO = alg_class(actor_critic, 
-                                  estimator,
-                                  self.estimator_cfg,
-                                  device=self.device, 
-                                  **self.alg_cfg)
-        
+        self.alg: PPO = alg_class(actor_critic, device=self.device, **self.alg_cfg)
         self.num_steps_per_env = self.cfg["num_steps_per_env"]
         self.save_interval = self.cfg["save_interval"]
-        self.dagger_update_freq = self.estimator_cfg["dagger_update_freq"]
 
         # init storage and model
-        self.alg.init_storage(self.env.num_envs, self.num_steps_per_env, 
-            [self.env.num_obs], 
-            [self.env.num_privileged_obs], 
-            [self.env.num_actions],
-        )
-        self.learn = self.learn_RL
-            
+        self.alg.init_storage(self.env.num_envs, self.num_steps_per_env, [self.env.num_obs], [self.env.num_privileged_obs], [self.env.num_actions])
+
         # Log
         self.log_dir = log_dir
         self.writer = None
@@ -116,7 +80,7 @@ class OnPolicyRunner:
 
         _, _ = self.env.reset()
     
-    def learn_RL(self, num_learning_iterations, init_at_random_ep_len=False):
+    def learn(self, num_learning_iterations, init_at_random_ep_len=False):
         # initialize writer
         if self.log_dir is not None and self.writer is None:
             self.writer = SummaryWriter(log_dir=self.log_dir, flush_secs=10)
@@ -140,12 +104,7 @@ class OnPolicyRunner:
             # Rollout
             with torch.inference_mode():
                 for i in range(self.num_steps_per_env):
-                    # Get depth images if using visual RL (single frame, no buffer)
-                    depth_images = None
-                    if self.cfg["policy_class_name"] == "VisualActorCritic" and hasattr(self.env, 'depth_image'):
-                        depth_images = self.env.depth_image
-                    
-                    actions = self.alg.act(obs, critic_obs, depth_images=depth_images)
+                    actions = self.alg.act(obs, critic_obs)
                     obs, privileged_obs, rewards, dones, infos = self.env.step(actions)
                     critic_obs = privileged_obs if privileged_obs is not None else obs
                     obs, critic_obs, rewards, dones = obs.to(self.device), critic_obs.to(self.device), rewards.to(self.device), dones.to(self.device)
@@ -170,7 +129,7 @@ class OnPolicyRunner:
                 start = stop
                 self.alg.compute_returns(critic_obs)
             
-            mean_value_loss, mean_surrogate_loss = self.alg.update()
+            mean_value_loss, mean_surrogate_loss, mean_entropy = self.alg.update()
             stop = time.time()
             learn_time = stop - start
             if self.log_dir is not None:
@@ -251,7 +210,6 @@ class OnPolicyRunner:
                                locs['num_learning_iterations'] - locs['it']):.1f}s\n""")
         print(log_string)
 
-
     def save(self, path, infos=None):
         torch.save({
             'model_state_dict': self.alg.actor_critic.state_dict(),
@@ -273,4 +231,3 @@ class OnPolicyRunner:
         if device is not None:
             self.alg.actor_critic.to(device)
         return self.alg.actor_critic.act_inference
-    
