@@ -283,9 +283,15 @@ class GO2Robot(LeggedRobot):
                     far_clip = self.cfg.depth.far_clip    # 3.0m
                     
                     # Clamp to camera depth range
-                    depth_image = torch.clamp(depth_image, min=-far_clip, max=far_clip)
+                    depth_image = torch.clamp(depth_image, min=-far_clip, max=-near_clip)
                     # Replace nan/inf with valid depth values within camera range
-                    depth_image = torch.nan_to_num(depth_image, nan=far_clip, posinf=far_clip, neginf=near_clip)
+                    depth_image = torch.nan_to_num(depth_image, nan=-far_clip, posinf=-far_clip, neginf=-near_clip)
+                    
+                    # Normalize depth values to [-1, 1] for better learning
+                    # Depth values are negative (farther = more negative)
+                    # Convert from [-far_clip, -near_clip] to [0, 1] then to [-1, 1]
+                    depth_normalized = (depth_image - (-far_clip)) / (far_clip - near_clip)  # [0, 1]
+                    depth_image = depth_normalized * 2.0 - 1.0  # [-1, 1]
                     
                     # Resize to 64x64 if needed, then flatten immediately
                     if hasattr(self, 'resize_transform'):

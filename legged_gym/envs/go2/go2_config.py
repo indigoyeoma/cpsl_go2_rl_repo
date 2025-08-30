@@ -100,13 +100,15 @@ class GO2RoughCfg( LeggedRobotCfg ):
         class scales( LeggedRobotCfg.rewards.scales ):
             torques = -0.0002
             dof_pos_limits = -10.0
+            # lin_vel_x = 2.0  # Increased from 2.0 to encourage more forward movement
+            tracking_lin_vel = 2.0  # Add reward for tracking commanded velocities
             
 class GO2RoughCfgPPO( LeggedRobotCfgPPO ):
     class policy( LeggedRobotCfgPPO.policy ):
         init_noise_std = 1.0
-        actor_hidden_dims = [1024, 512, 256]
-        critic_hidden_dims = [1024, 512, 256]
-        activation = 'relu'
+        actor_hidden_dims = [512, 256, 128]  # Reduced network size for visual input
+        critic_hidden_dims = [512, 256, 128]  # Reduced network size for visual input
+        activation = 'elu'  # ELU often works better than ReLU for RL
         
     class runner( LeggedRobotCfgPPO.runner ):
         run_name = ''
@@ -114,5 +116,20 @@ class GO2RoughCfgPPO( LeggedRobotCfgPPO ):
         policy_class_name = 'ActorCritic'
         save_interval = 500  
         max_iterations = 1000000
+        
+    class algorithm( LeggedRobotCfgPPO.algorithm ):
+        # Reduced learning rate for visual learning stability
+        learning_rate = 3e-4  # Reduced from 1e-3
+        entropy_coef = 0.01  # Encourage exploration
+        num_learning_epochs = 5
+        num_mini_batches = 4
+        clip_param = 0.2
+        gamma = 0.99
+        lam = 0.95
+        value_loss_coef = 1.0
+        use_clipped_value_loss = True
+        max_grad_norm = 0.5  # Gradient clipping for stability
+        desired_kl = 0.01
+        schedule = 'adaptive'  # Adaptive learning rate
 
   
