@@ -13,18 +13,42 @@ class GO2Robot(LeggedRobot):
         self.check_camera = False  # Disable camera display by default
         self.depth_image = None  # Single frame depth image
         
+        # IMPROVEMENT from Helpful-Doggybot: Use depth buffer for temporal history
+        # self.depth_buffer = torch.zeros(num_envs, buffer_len, height, width)
+        # This would store last N frames for better motion understanding
+        
         # Initialize camera-related attributes
         self.cam_handles = []
         if cfg.depth.use_camera:
+            # torchvision.Resize expects (height, width) but cfg has (width, height)  
+            # Current: (cfg.depth.resized[1], cfg.depth.resized[0]) swaps to get (height, width)
+            # This is correct if cfg.depth.resized = (84, 84) for square images
             self.resize_transform = torchvision.transforms.Resize(
                 (cfg.depth.resized[1], cfg.depth.resized[0]), 
-                interpolation=torchvision.transforms.InterpolationMode.BICUBIC
+                interpolation=torchvision.transforms.InterpolationMode.BILINEAR
             )
         
         super().__init__(cfg, sim_params, physics_engine, sim_device, headless)
         
-        # Update noise scale vector after initialization to account for depth observations
+        # Initialize depth buffer for raw image storage
         if cfg.depth.use_camera:
+            print(f"🔍 Debug: Initializing depth buffer")
+            print(f"   - num_envs: {self.num_envs}")
+            print(f"   - buffer_len: {cfg.depth.buffer_len}")
+            print(f"   - resized dimensions: {cfg.depth.resized} → height={cfg.depth.resized[1]}, width={cfg.depth.resized[0]}")
+            
+            self.depth_buffer = torch.zeros(
+                self.num_envs,
+                cfg.depth.buffer_len,
+                cfg.depth.resized[1],  # height
+                cfg.depth.resized[0]   # width
+            ).to(self.device)
+            
+            print(f"   - depth_buffer shape: {self.depth_buffer.shape}")
+            print(f"   - Expected flattened size per env: {cfg.depth.resized[0] * cfg.depth.resized[1]}")
+            # Initialize global counter for depth buffer updates
+            self.global_counter = 0
+            # Update noise scale vector after initialization to account for depth observations
             self.noise_scale_vec = self._get_noise_scale_vec(self.cfg)
     
     def create_sim(self):
@@ -90,10 +114,20 @@ class GO2Robot(LeggedRobot):
             # Original random placement for wall-based terrain
             # Get terrain grid boundaries - use actual terrain origins
             grid_bounds = self.terrain.env_origins
-            min_x = np.min(grid_bounds[:, :, 0]) - self.terrain.cfg.terrain_length/2
-            max_x = np.max(grid_bounds[:, :, 0]) + self.terrain.cfg.terrain_length/2  
-            min_y = np.min(grid_bounds[:, :, 1]) - self.terrain.cfg.terrain_width/2
-            max_y = np.max(grid_bounds[:, :, 1]) + self.terrain.cfg.terrain_width/2
+            
+            # Calculate the middle spawn area: outer border is always 1, middle is dynamic
+            border_size = 1  # 1 cell border on all sides
+            spawn_rows = self.terrain.cfg.num_rows - 2 * border_size  # Total - 2 border cells
+            spawn_cols = self.terrain.cfg.num_cols - 2 * border_size  # Total - 2 border cells
+            rows_offset = border_size  # Start after 1-cell border
+            cols_offset = border_size  # Start after 1-cell border
+            
+            # Get the bounds of the middle spawn grid
+            middle_grid = grid_bounds[rows_offset:rows_offset+spawn_rows, cols_offset:cols_offset+spawn_cols]
+            min_x = np.min(middle_grid[:, :, 0]) - self.terrain.cfg.terrain_length/2
+            max_x = np.max(middle_grid[:, :, 0]) + self.terrain.cfg.terrain_length/2  
+            min_y = np.min(middle_grid[:, :, 1]) - self.terrain.cfg.terrain_width/2
+            max_y = np.max(middle_grid[:, :, 1]) + self.terrain.cfg.terrain_width/2
             
             grid_center_x = (min_x + max_x) / 2
             grid_center_y = (min_y + max_y) / 2
@@ -113,7 +147,7 @@ class GO2Robot(LeggedRobot):
             
             # Keep trying until all robots are placed safely
             for robot_idx in range(self.num_envs):
-                max_attempts = 1000  # Much higher attempt count
+                max_attempts = 100  # Much higher attempt count
                 placed = False
                 
                 for attempt in range(max_attempts):
@@ -239,7 +273,14 @@ class GO2Robot(LeggedRobot):
         return depth_image
     
     def step(self, actions):
-        """Override step to show live camera feed during training"""
+        """Override step to update depth buffer and show camera feed"""
+        # Increment global counter for depth buffer timing
+        if hasattr(self, 'global_counter'):
+            self.global_counter += 1
+        
+        # Update depth buffer before stepping (ensures sync with compute_observations)
+        self.update_depth_buffer()
+        
         result = super().step(actions)
         
         # Show depth camera at same rate as GUI rendering
@@ -248,8 +289,133 @@ class GO2Robot(LeggedRobot):
             
         return result
     
+    def update_depth_buffer(self):
+        """Update depth buffer with raw images - following Helpful-Doggybot pattern"""
+        if not self.cfg.depth.use_camera:
+            return
+        
+        # Debug: Check camera setup
+        if not hasattr(self, '_debug_printed'):
+            print(f"🔍 Debug: update_depth_buffer called")
+            print(f"   - num_envs: {self.num_envs}")
+            print(f"   - cam_handles length: {len(self.cam_handles) if hasattr(self, 'cam_handles') else 'No cam_handles'}")
+            print(f"   - depth_buffer shape: {self.depth_buffer.shape if hasattr(self, 'depth_buffer') else 'No depth_buffer'}")
+            self._debug_printed = True
+        
+        # Only update depth buffer at specified intervals for efficiency
+        if hasattr(self, 'global_counter') and self.global_counter % self.cfg.depth.update_interval != 0:
+            return
+            
+        self.gym.step_graphics(self.sim)
+        self.gym.render_all_camera_sensors(self.sim)
+        self.gym.start_access_image_tensors(self.sim)
+        
+        # Batch collect all depth tensors first
+        raw_depth_tensors = []
+        valid_env_indices = []
+        
+        for i in range(self.num_envs):
+            if i < len(self.cam_handles):
+                depth_tensor = self.gym.get_camera_image_gpu_tensor(
+                    self.sim,
+                    self.envs[i], 
+                    self.cam_handles[i],
+                    gymapi.IMAGE_DEPTH
+                )
+                raw_depth_tensors.append(gymtorch.wrap_tensor(depth_tensor))
+                valid_env_indices.append(i)
+        
+        self.gym.end_access_image_tensors(self.sim)
+        
+        # Batch process all images at once
+        if raw_depth_tensors:
+            batch_raw_depth = torch.stack(raw_depth_tensors, dim=0)  # [N, H, W]
+            batch_processed_depth = self.process_depth_batch(batch_raw_depth)  # [N, 84, 84]
+            
+            # Vectorized buffer update - much faster than loop
+            valid_env_tensor = torch.tensor(valid_env_indices, device=self.device, dtype=torch.long)
+            init_flags = self.episode_length_buf[valid_env_tensor] <= 1
+            
+            # For initialized environments, just copy the new frame
+            if self.cfg.depth.buffer_len == 1:
+                # Single frame buffer - direct assignment
+                self.depth_buffer[valid_env_tensor] = batch_processed_depth.unsqueeze(1)
+            else:
+                # Multi-frame buffer - needs shifting
+                for idx, env_i in enumerate(valid_env_indices):
+                    if init_flags[idx]:
+                        self.depth_buffer[env_i] = batch_processed_depth[idx].unsqueeze(0).repeat(self.cfg.depth.buffer_len, 1, 1)
+                    else:
+                        self.depth_buffer[env_i, :-1] = self.depth_buffer[env_i, 1:].clone()
+                        self.depth_buffer[env_i, -1] = batch_processed_depth[idx]
+
+    def process_depth_batch(self, batch_raw_depth):
+        """Process batch of raw depth images - much faster than individual processing"""
+        # Clean up depth images - replace inf/nan with camera range values
+        near_clip = self.cfg.depth.near_clip  # 0.3m
+        far_clip = self.cfg.depth.far_clip    # 3.0m
+        
+        # Clamp to camera depth range for entire batch
+        depth_batch = torch.clamp(batch_raw_depth, min=-far_clip, max=-near_clip)
+        # Replace nan/inf with valid depth values within camera range
+        depth_batch = torch.nan_to_num(depth_batch, nan=-far_clip, posinf=-far_clip, neginf=-near_clip)
+        
+        # Add D435i realistic noise if configured
+        if self.cfg.depth.dis_noise > 0 and self.add_noise:
+            # Distance-dependent noise (more noise at farther distances)
+            distance_normalized = (depth_batch - (-far_clip)) / (far_clip - near_clip)  # 0 to 1
+            noise_scale = self.cfg.depth.dis_noise * (1.0 + distance_normalized * 2.0)  # Scale noise with distance
+            noise = torch.randn_like(depth_batch) * noise_scale
+            depth_batch = depth_batch + noise
+            # Re-clamp after adding noise
+            depth_batch = torch.clamp(depth_batch, min=-far_clip, max=-near_clip)
+        
+        # Normalize depth values to [-1, 1] for better learning
+        # Depth values are negative (farther = more negative)
+        # Convert from [-far_clip, -near_clip] to [0, 1] then to [-1, 1]
+        depth_normalized = (depth_batch - (-far_clip)) / (far_clip - near_clip)  # [0, 1]
+        depth_batch = depth_normalized * 2.0 - 1.0  # [-1, 1]
+        
+        # Batch resize from 480×270 to 84×84 - much faster than individual resizes
+        if hasattr(self, 'resize_transform'):
+            depth_batch = self.resize_transform(depth_batch)  # Process all images at once
+        
+        return depth_batch  # [N, 84, 84]
+
+    def process_depth_image(self, raw_depth):
+        """Process raw depth image into normalized format - kept for compatibility"""
+        # Clean up depth image - replace inf/nan with camera range values
+        near_clip = self.cfg.depth.near_clip  # 0.3m
+        far_clip = self.cfg.depth.far_clip    # 3.0m
+        
+        # Clamp to camera depth range
+        depth_image = torch.clamp(raw_depth, min=-far_clip, max=-near_clip)
+        # Replace nan/inf with valid depth values within camera range
+        depth_image = torch.nan_to_num(depth_image, nan=-far_clip, posinf=-far_clip, neginf=-near_clip)
+        
+        # Normalize depth values to [-1, 1] for better learning
+        # Depth values are negative (farther = more negative)
+        # Convert from [-far_clip, -near_clip] to [0, 1] then to [-1, 1]
+        depth_normalized = (depth_image - (-far_clip)) / (far_clip - near_clip)  # [0, 1]
+        depth_image = depth_normalized * 2.0 - 1.0  # [-1, 1]
+        
+        # Resize from 480×270 to 84×84 if needed
+        if hasattr(self, 'resize_transform'):
+            depth_image = self.resize_transform(depth_image.unsqueeze(0)).squeeze(0)
+        
+        return depth_image  # [84, 84]
+
+    def get_current_depth_obs(self):
+        """Get current depth observations as [N, 1, 84, 84] for CNN processing"""
+        if not self.cfg.depth.use_camera or not hasattr(self, 'depth_buffer'):
+            return torch.zeros(self.num_envs, 1, 84, 84, device=self.device)
+        
+        # Get most recent depth image from buffer and add channel dimension
+        current_depth = self.depth_buffer[:, -1]  # [N, 84, 84]
+        return current_depth.unsqueeze(1)  # [N, 1, 84, 84]
+
     def compute_observations(self):
-        """Override to include depth features in observations"""
+        """Compute proprioceptive observations - depth handled separately"""
         # Compute base observations without noise (copy from base class)
         self.obs_buf = torch.cat((  self.base_lin_vel * self.obs_scales.lin_vel,
                                     self.base_ang_vel  * self.obs_scales.ang_vel,
@@ -260,55 +426,13 @@ class GO2Robot(LeggedRobot):
                                     self.actions
                                     ),dim=-1)
         
-        # Add depth images if using camera
-        if self.cfg.depth.use_camera:
-            self.gym.step_graphics(self.sim)
-            self.gym.render_all_camera_sensors(self.sim)
-            self.gym.start_access_image_tensors(self.sim)
-            
-            depth_images = []
-            for i in range(self.num_envs):
-                if i < len(self.cam_handles):
-                    # Get depth image directly from camera
-                    depth_tensor = self.gym.get_camera_image_gpu_tensor(
-                        self.sim,
-                        self.envs[i], 
-                        self.cam_handles[i],
-                        gymapi.IMAGE_DEPTH
-                    )
-                    depth_image = gymtorch.wrap_tensor(depth_tensor)
-                    
-                    # Clean up depth image - replace inf/nan with camera range values
-                    near_clip = self.cfg.depth.near_clip  # 0.3m
-                    far_clip = self.cfg.depth.far_clip    # 3.0m
-                    
-                    # Clamp to camera depth range
-                    depth_image = torch.clamp(depth_image, min=-far_clip, max=-near_clip)
-                    # Replace nan/inf with valid depth values within camera range
-                    depth_image = torch.nan_to_num(depth_image, nan=-far_clip, posinf=-far_clip, neginf=-near_clip)
-                    
-                    # Normalize depth values to [-1, 1] for better learning
-                    # Depth values are negative (farther = more negative)
-                    # Convert from [-far_clip, -near_clip] to [0, 1] then to [-1, 1]
-                    depth_normalized = (depth_image - (-far_clip)) / (far_clip - near_clip)  # [0, 1]
-                    depth_image = depth_normalized * 2.0 - 1.0  # [-1, 1]
-                    
-                    # Resize to 64x64 if needed, then flatten immediately
-                    if hasattr(self, 'resize_transform'):
-                        depth_image = self.resize_transform(depth_image.unsqueeze(0)).squeeze(0)
-                    
-                    # Flatten: [64, 64] → [4096]
-                    depth_flat = depth_image.view(-1)
-                    depth_images.append(depth_flat)
-            
-            self.gym.end_access_image_tensors(self.sim)
-            
-            if depth_images:
-                # Stack and add to observations: [N, 4096] 
-                depth_batch = torch.stack(depth_images, dim=0)  # [N, 4096]
-                self.obs_buf = torch.cat([self.obs_buf, depth_batch], dim=-1)
+        # For backward compatibility with non-HyperPPO systems, add flattened depth
+        if self.cfg.depth.use_camera and hasattr(self, 'depth_buffer'):
+            current_depth = self.depth_buffer[:, -1]  # [N, 64, 64]
+            depth_flat = current_depth.view(self.num_envs, -1)  # [N, 4096]
+            self.obs_buf = torch.cat([self.obs_buf, depth_flat], dim=-1)
         
-        # Add noise if needed (applied to full observation including depth)
+        # Add noise if needed
         if self.add_noise:
             self.obs_buf += (2 * torch.rand_like(self.obs_buf) - 1) * self.noise_scale_vec
     
@@ -367,10 +491,10 @@ class GO2Robot(LeggedRobot):
         
         # If using depth camera, extend noise vector for depth dimensions
         if cfg.depth.use_camera:
-            depth_size = cfg.depth.resized[0] * cfg.depth.resized[1]  # 64*64 = 4096
+            depth_size = cfg.depth.resized[0] * cfg.depth.resized[1]  # 84*84 = 7056
             # Add zero noise for depth images (depth images shouldn't have noise added)
             depth_noise = torch.zeros(depth_size, device=self.device)
-            # Concatenate: [48 base obs noise + 4096 depth noise (zeros)]
+            # Concatenate: [48 base obs noise + 7056 depth noise (zeros)]
             result = torch.cat([noise_vec, depth_noise])
             return result
         else:

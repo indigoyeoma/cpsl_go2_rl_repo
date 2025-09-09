@@ -139,18 +139,21 @@ class SimpleCNN(nn.Module):
         """
             expects input is of form [B, H, W, C]
         """
+
         cnn_input = []
         if self._n_input_rgb > 0:
             rgb_observations = observations["rgb"]
-            # permute tensor to dimension [BATCH x CHANNEL x HEIGHT X WIDTH]
-            rgb_observations = rgb_observations.permute(0, 3, 1, 2)
-            rgb_observations = (
-                rgb_observations.float() / 255.0
-            )  # normalize RGB
-            cnn_input.append(rgb_observations)
+            # # permute tensor to dimension [BATCH x CHANNEL x HEIGHT X WIDTH]
+            # rgb_observations = rgb_observations.permute(0, 3, 1, 2)
+            # rgb_observations = (
+            #     rgb_observations.float() / 255.0
+            # )  # normalize RGB
+            # cnn_input.append(rgb_observations)
+            assert False, print("no rgb input")
 
         if self._n_input_depth > 0:
             depth_observations = observations["depth"]
+            # print(f"depth_observations shape: {depth_observations.shape}")
             # permute tensor to dimension [BATCH x CHANNEL x HEIGHT X WIDTH]
             depth_observations = depth_observations.permute(0, 3, 1, 2)
             cnn_input.append(depth_observations)

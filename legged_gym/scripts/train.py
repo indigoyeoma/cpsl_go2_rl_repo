@@ -7,7 +7,7 @@ import sys
 #MESA_VK_DEVICE_SELECT=list vulkaninfo
 #use this code to get the gpu
 os.environ['MESA_VK_DEVICE_SELECT'] = '10de:2231'
-os.environ["CUDA_VISIBLE_DEVICES"] = '0'
+os.environ["CUDA_VISIBLE_DEVICES"] = '0,1,2,3'  # Make all 4 GPUs visible
 
 import isaacgym
 from legged_gym.envs import *

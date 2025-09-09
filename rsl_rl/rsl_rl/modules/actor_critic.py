@@ -284,8 +284,8 @@ class ActorCritic(nn.Module):
 
         activation = get_activation(activation)
         
-        # Check if using depth images - depth is always 64x64 = 4096 dimensions
-        self.depth_image_size = 64 * 64  # 4096
+        # Check if using depth images - depth is always 84x84 = 7056 dimensions
+        self.depth_image_size = 84 * 84  # 7056
         self.use_depth_actor = num_actor_obs > 48  # If actor obs > 48, we have depth
         self.use_depth_critic = num_critic_obs > 48  # If critic obs > 48, we have depth
         
@@ -296,22 +296,25 @@ class ActorCritic(nn.Module):
                     self.spaces = {"depth": type('obj', (object,), {'shape': (depth_shape[0], depth_shape[1], 1)})}
             
             # Shared depth encoder using SimpleCNN
-            obs_space = ObservationSpace((64, 64))
-            depth_latent_dim = 32
+            obs_space = ObservationSpace((84, 84))
+            print(f"🔍 Debug: ActorCritic creating SimpleCNN with obs_space")
+            print(f"   - depth shape passed: (84, 84)")
+            print(f"   - obs_space.spaces['depth'].shape: {obs_space.spaces['depth'].shape}")
+            depth_latent_dim = 128
             self.depth_encoder = SimpleCNN(obs_space, depth_latent_dim)
             print(f"ActorCritic with depth processing - SimpleCNN encoder added")
         
         # Calculate actor input dimensions
         if self.use_depth_actor:
             self.base_actor_obs_size = num_actor_obs - self.depth_image_size  # 48
-            mlp_input_dim_a = self.base_actor_obs_size + depth_latent_dim  # 48 + 32 = 80
+            mlp_input_dim_a = self.base_actor_obs_size + depth_latent_dim  # 48 + 128 = 176
         else:
             mlp_input_dim_a = num_actor_obs
             
         # Calculate critic input dimensions  
         if self.use_depth_critic:
             self.base_critic_obs_size = num_critic_obs - self.depth_image_size  # 48
-            mlp_input_dim_c = self.base_critic_obs_size + depth_latent_dim  # 48 + 32 = 80
+            mlp_input_dim_c = self.base_critic_obs_size + depth_latent_dim  # 48 + 128 = 176
         else:
             mlp_input_dim_c = num_critic_obs
 
@@ -393,7 +396,7 @@ class ActorCritic(nn.Module):
             depth_flat = observations[:, self.base_actor_obs_size:]  # [B, 4096]
         
         # Reshape flattened depth back to image format for CNN processing
-        depth_images = depth_flat.view(-1, 64, 64)  # [B, 64, 64]
+        depth_images = depth_flat.view(-1, 84, 84)  # [B, 84, 84]
         
         return base_obs, depth_images
     
@@ -720,7 +723,7 @@ class VisualActorCritic(nn.Module):
         depth_flat = observations[:, self.base_actor_obs_size:]  # [B, 4096]
         
         # Reshape flattened depth back to image format for CNN processing
-        depth_images = depth_flat.view(-1, 64, 64)  # [B, 64, 64]
+        depth_images = depth_flat.view(-1, 84, 84)  # [B, 84, 84]
         
         return base_obs, depth_images
     

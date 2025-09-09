@@ -2,18 +2,21 @@ from legged_gym.envs.base.legged_robot_config import LeggedRobotCfg, LeggedRobot
 
 class GO2RoughCfg( LeggedRobotCfg ):
     class env( LeggedRobotCfg.env ):
-        num_envs = 512  # Increased for larger terrain
+        num_envs = 64  # Reduced for faster training
         # Base observations: 48 (proprioception, commands, actions)
-        # Depth observations: 84*84 = 7056 (flattened depth image from 424x240 → 84x84)
+        # Depth observations: 84*84 = 7056 (flattened depth image from 480x270 raw → 84x84 processed)
         num_observations = 48 + 84*84  # 48 + 7056 = 7104 total
         num_privileged_obs = 48
-        env_spacing = 4.0  # 4m spacing between robots
+        # IMPORTANT: This triggers automatic visual mode in ActorCritic (observations > 48)
+        # episode_length_s = 30  # Increase from default 20s to give more learning time
         
+        # GPU acceleration
+        sim_device = 'cuda:0'
+        rl_device = 'cuda:0'
 
         
     class init_state( LeggedRobotCfg.init_state ):
         pos = [0.0, 0.0, 0.38] # x,y,z [m]
-        random_yaw = True  # Enable random yaw initialization on reset
         default_joint_angles = { # = target angles [rad] when action = 0.0
             'FL_hip_joint': 0.1,   # [rad]
             'RL_hip_joint': 0.1,   # [rad]
@@ -50,39 +53,45 @@ class GO2RoughCfg( LeggedRobotCfg ):
         self_collisions = 1 # 1 to disable, 0 to enable...bitwise filter
 
     class terrain( LeggedRobotCfg.terrain ):
-        mesh_type = 'plane'  # Flat terrain
-        terrain_proportions = [1.0, 0.0, 0.0, 0.0, 0.0, 0.0]  # 100% flat terrain
-        border_size = 0  # No border
-        num_rows = 10  # Terrain grid size
-        num_cols = 10  # Terrain grid size
-        terrain_length = 8.  # 8m patches for better spacing
-        terrain_width = 8.
+        mesh_type = 'trimesh'
+        terrain_proportions = [0.0, 0.0, 0.0, 0.0, 1.0, 0.0]  # 100% walls only - simple dodging
+        border_size = 0  # No border - walls extend to entire area
+        num_rows = 12  # 12x12 terrain grid (robots spawn in middle 8x8)
+        num_cols = 12  # 12x12 terrain grid (robots spawn in middle 8x8)
+        terrain_length = 5.  # Keep 5m patches
+        terrain_width = 5.
         curriculum = False
     
     class depth:
         use_camera = True  # Enabled for visual RL
-        camera_num_envs = 512  # Cameras for all 512 robots
-        camera_terrain_num_rows = 8  # Robots spawn in middle 8x8 of 10x10 terrain (avoiding edges)
-        camera_terrain_num_cols = 8  # Robots spawn in middle 8x8 of 10x10 terrain (avoiding edges)
+        camera_num_envs = 64  # Cameras for all 64 robots
+        camera_terrain_num_rows = 8  # Robots spawn in middle 8x8 of 12x12 terrain
+        camera_terrain_num_cols = 8  # Robots spawn in middle 8x8 of 12x12 terrain
         
         # Camera mounting position on Go2
         position = [0.27, 0, 0.08]  # 27cm forward, 8cm up (lower for better ground view)
+        # IMPROVEMENT from Helpful-Doggybot: position = [0.3, 0, 0.147]  # 30cm forward, 14.7cm up
         position_rand = 0.01  # Small position randomization for robustness
         angle = [0, 0]  # camera angle [min, max] (positive pitch down)
+        # IMPROVEMENT from Helpful-Doggybot: angle = [27, 32]  # Better downward angle for terrain
         
-        # Camera resolution settings (D435i specs)
-        original = (424, 240)  # D435i depth resolution
-        resized = (84, 84)     # Final processed image size for CNN
-        horizontal_fov = 87    # D435i horizontal FOV (87 degrees)
+        # Camera resolution settings (following ManiSkill HyperPPO pattern)
+        original = (480, 270)  # Raw camera image size (16:9 aspect ratio)
+        resized = (84, 84)     # Final processed image size for CNN (matching ManiSkill)
+        # Processing pipeline: 480x270 → 84x84 (bilinear interpolation downsampling)
+        horizontal_fov = 87    # Wide FOV for obstacle detection
+        # IMPROVEMENT: Could use 86 degrees to match references
         
-        # Depth range for obstacle detection (D435i specs)
+        # Depth range for obstacle detection
         near_clip = 0.3   # 30cm minimum range
-        far_clip = 3.0    # 3m maximum range 
-        dis_noise = 0.01   # D435i realistic noise: ~1cm std dev (average across range)
+        # IMPROVEMENT: near_clip = 0.01 for closer obstacle detection
+        far_clip = 3.0    # 3m maximum range for wall detection
+        # IMPROVEMENT: far_clip = 3.5 for slightly longer range
+        dis_noise = 0.0  # depth noise magnitude
         
         # No buffer needed - single frame processing
         update_interval = 1    # Process every frame
-        buffer_len = 1         # single frame only
+        buffer_len = 2         # temporal buffer length
   
     class commands( LeggedRobotCfg.commands ):
         class ranges:
@@ -94,11 +103,11 @@ class GO2RoughCfg( LeggedRobotCfg ):
     class rewards( LeggedRobotCfg.rewards ):
         soft_dof_pos_limit = 0.9
         base_height_target = 0.25
-        only_positive_rewards = False  # Allow negative rewards for better gradient signal
 
         class scales( LeggedRobotCfg.rewards.scales ):
             torques = -0.0002
             dof_pos_limits = -10.0
+            
             tracking_lin_vel = 5.0  # Add reward for tracking commanded velocities
             # orientation = -0.5
             
@@ -108,31 +117,38 @@ class GO2RoughCfg( LeggedRobotCfg ):
             lin_vel_z = -2.0           # Minimize vertical velocity
 
             # Collision avoidance
-            collision = -15.0     
+            collision = -15.0           # Very strong penalty for collisions
             
 class GO2RoughCfgPPO( LeggedRobotCfgPPO ):
     class policy( LeggedRobotCfgPPO.policy ):
         init_noise_std = 1.0
-        actor_hidden_dims = [512, 256, 128]  # Reduced network size for visual input
-        critic_hidden_dims = [512, 256, 128]  # Reduced network size for visual input
-        activation = 'elu'  # ELU often works better than ReLU for RL
-        
-        # HyperPPO specific parameters (commented out - using original)
-        # meta_batch_size = 2  # Number of architectures per iteration
-        # architecture_config_path = None  # Use default GO2 architectures
+        # Standard network dimensions 
+        actor_hidden_dims = [512, 256, 128]  
+        critic_hidden_dims = [512, 256, 128]  
+        activation = 'elu'
         
     class runner( LeggedRobotCfgPPO.runner ):
         run_name = ''
-        experiment_name = 'visual_go2'
-        # Standard visual RL with CNN+MLP
-        policy_class_name = 'ActorCritic'  # Standard ActorCritic
-        algorithm_class_name = 'PPO'       # Standard PPO
-        save_interval = 500  
-        max_iterations = 100_000
+        experiment_name = 'hyper_go2'
+        # Use standard ActorCritic - HyperAgent wrapper will handle HyperPPO
+        policy_class_name = 'ActorCritic'  
+        algorithm_class_name = 'PPO'  
+        save_interval = 100  # Save more frequently for monitoring
+        max_iterations = 10000  # Reduced for initial testing
         
     class algorithm( LeggedRobotCfgPPO.algorithm ):
-        # Optimized for visual RL with CNN processing
+        # Standard PPO hyperparameters
+        learning_rate = 1e-4  
+        entropy_coef = 0.01  
         num_learning_epochs = 3  
-        num_mini_batches = 4  # 256 envs ÷ 16 = 16 samples per batch (better for CNN training)
+        num_mini_batches = 4  
+        clip_param = 0.2
+        gamma = 0.99
+        lam = 0.95
+        value_loss_coef = 1.0
+        use_clipped_value_loss = True
+        max_grad_norm = 0.5  
+        desired_kl = 0.01
+        schedule = 'adaptive'
 
   
