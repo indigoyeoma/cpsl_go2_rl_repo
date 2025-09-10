@@ -2,16 +2,16 @@ from legged_gym.envs.base.legged_robot_config import LeggedRobotCfg, LeggedRobot
 
 class GO2RoughCfg( LeggedRobotCfg ):
     class env( LeggedRobotCfg.env ):
-        num_envs = 256  # Reduced to 256 for faster collection
+        num_envs = 128  # Balanced for performance and training
+        # Base observations: 48 (proprioception, commands, actions)
+        # Depth observations: 84*84 = 7056 (flattened depth image from 424x240 → 84x84)
         num_observations = 48 + 84*84  # 48 + 7056 = 7104 total
         num_privileged_obs = 48
-        env_spacing = 8.0  # 5m spacing between robots for safety
         
 
         
     class init_state( LeggedRobotCfg.init_state ):
-        pos = [0.0, 0.0, 0.42] # x,y,z [m]
-        random_yaw = True  # Enable random yaw for varied initial orientations
+        pos = [0.0, 0.0, 0.38] # x,y,z [m]
         default_joint_angles = { # = target angles [rad] when action = 0.0
             'FL_hip_joint': 0.1,   # [rad]
             'RL_hip_joint': 0.1,   # [rad]
@@ -48,23 +48,29 @@ class GO2RoughCfg( LeggedRobotCfg ):
         self_collisions = 1 # 1 to disable, 0 to enable...bitwise filter
 
     class terrain( LeggedRobotCfg.terrain ):
-        mesh_type = 'plane'  # Simple infinite plane for fastest collection
+        mesh_type = 'trimesh'
+        terrain_proportions = [0.0, 0.0, 0.0, 0.0, 1.0, 0.0]  # 100% walls only - simple dodging
+        border_size = 0  # No border - walls extend to entire area
+        num_rows = 13  # 13x13 terrain grid (robots spawn in middle 11x11)
+        num_cols = 13  # 13x13 terrain grid (robots spawn in middle 11x11)
+        terrain_length = 5.  # Keep 5m patches
+        terrain_width = 5.
         curriculum = False
     
     class depth:
         use_camera = True  # Enabled for visual RL
-        camera_num_envs = 256  # Cameras for 256 robots
-        camera_terrain_num_rows = 8   # Grid for 256 robots  
-        camera_terrain_num_cols = 8   # Grid for 256 robots
+        camera_num_envs = 128  # Cameras for all 128 robots
+        camera_terrain_num_rows = 11  # Robots spawn in middle 11x11 of 13x13 terrain
+        camera_terrain_num_cols = 11  # Robots spawn in middle 11x11 of 13x13 terrain
         
         # Camera mounting position on Go2
         position = [0.27, 0, 0.08]  # 27cm forward, 8cm up (lower for better ground view)
         position_rand = 0.01  # Small position randomization for robustness
         angle = [0, 0]  # camera angle [min, max] (positive pitch down)
         
-        # Camera resolution settings (D435i specs) - KEEP 84x84 FOR SIM2REAL
+        # Camera resolution settings (D435i specs)
         original = (424, 240)  # D435i depth resolution
-        resized = (84, 84)     # Keep 84x84 for sim2real transfer
+        resized = (84, 84)     # Final processed image size for CNN
         horizontal_fov = 87    # D435i horizontal FOV (87 degrees)
         
         # Depth range for obstacle detection (D435i specs)
@@ -73,39 +79,34 @@ class GO2RoughCfg( LeggedRobotCfg ):
         dis_noise = 0.01   # D435i realistic noise: ~1cm std dev (average across range)
         
         # No buffer needed - single frame processing
-        update_interval = 1    # Process every frame for best sim2real
+        update_interval = 1    # Process every frame
         buffer_len = 1         # single frame only
   
     class commands( LeggedRobotCfg.commands ):
         class ranges:
-            lin_vel_x = [0.6, 1.0]      # Wider speed range for variety
-            lin_vel_y = [-0.1, 0.1]     # Moderate side-stepping
-            ang_vel_yaw = [0.0, 0.0]   # Allow turning for orientation correction
-            heading = [0.0, 0.0]     # Full rotation range for diverse training
+            lin_vel_x = [0.9, 1.1]      # Still mostly forward, slight variation
+            lin_vel_y = [-0.5, 0.5]     # Side-stepping for dodging walls
+            ang_vel_yaw = [-0., 0.]     # No rotation - pure strafing
+            heading = [0.0, 0.0]        # Always face forward
     
     class rewards( LeggedRobotCfg.rewards ):
         soft_dof_pos_limit = 0.9
-        base_height_target = 0.25  # Increased from 0.3 to prevent body dragging
-        only_positive_rewards = True  # Allow negative rewards for better gradient signal
+        base_height_target = 0.25
+        only_positive_rewards = False  # Allow negative rewards for better gradient signal
 
         class scales( LeggedRobotCfg.rewards.scales ):
             torques = -0.0002
             dof_pos_limits = -10.0
-            
-            # Velocity tracking (most important for locomotion)
-            tracking_lin_vel = 1.5      # Strong reward for forward velocity
-            # tracking_ang_vel = 2.0      # Moderate reward for angular velocity
+            tracking_lin_vel = 5.0  # Add reward for tracking commanded velocities
+            # orientation = -0.5
             
             # Height and stability
-            # base_height = -30.0         # Increased penalty to strongly maintain target height
-            # orientation = -5.0          # Li ht penalty for roll/pitch (allow some dynamics)
-            # lin_vel_z = -2.0           # Increased penalty for vertical velocity
-            
-            # Energy efficiency
-            # action_rate = -0.01         # Penalize rapid action changes
-            
-            # Collision avoidance  
-            # collision = -20.0           # Strong collision penalty     
+            base_height = -8.0          # Strong penalty for height deviation
+            orientation = -2.0          # Keep body level
+            lin_vel_z = -2.0           # Minimize vertical velocity
+
+            # Collision avoidance
+            collision = -15.0     
             
 class GO2RoughCfgPPO( LeggedRobotCfgPPO ):
     class policy( LeggedRobotCfgPPO.policy ):
@@ -129,13 +130,7 @@ class GO2RoughCfgPPO( LeggedRobotCfgPPO ):
         
     class algorithm( LeggedRobotCfgPPO.algorithm ):
         # Optimized for visual RL with CNN processing
-        num_learning_epochs = 3  # Increased for better visual feature learning
-        num_mini_batches = 16  # 1024 envs ÷ 16 = 64 samples per batch (optimal for visual learning)
-        
-        # HyperPPO specific settings
-        value_loss_coef = 1.0    # Standard value loss coefficient
-        entropy_coef = 0.01      # Standard entropy coefficient
-        learning_rate = 3e-4     # Standard learning rate
+        num_learning_epochs = 3  
+        num_mini_batches = 4  # 256 envs ÷ 16 = 16 samples per batch (better for CNN training)
 
   
-

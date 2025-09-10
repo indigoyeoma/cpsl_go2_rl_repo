@@ -10,7 +10,7 @@ class GO2Robot(LeggedRobot):
     """GO2 quadruped robot environment with depth camera for visual RL"""
     
     def __init__(self, cfg: GO2RoughCfg, sim_params, physics_engine, sim_device, headless):
-        self.check_camera = False  # Disable camera display by default
+        self.check_camera = False  # CRITICAL: Disable to avoid GPU→CPU transfers during training
         self.depth_image = None  # Single frame depth image
         
         # IMPROVEMENT from Helpful-Doggybot: Use depth buffer for temporal history
@@ -77,142 +77,30 @@ class GO2Robot(LeggedRobot):
         self._create_envs()
     
     def _get_env_origins(self):
-        """Place robots in individual corridors or randomly for wall-based terrain"""
-        if self.cfg.terrain.mesh_type in ['trimesh', 'heightfield']:
-            self.custom_origins = True
-            self.env_origins = torch.zeros(self.num_envs, 3, device=self.device, requires_grad=False)
-            
-            # Check if we're using individual corridors terrain
-            if len(self.cfg.terrain.terrain_proportions) > 5 and self.cfg.terrain.terrain_proportions[5] > 0.0:
-                # Individual corridors layout
-                corridors_per_row = int(np.sqrt(self.num_envs))  # 11x11 grid for 128 robots
-                corridor_width = 3.0  # Match terrain generation
-                
-                # Calculate terrain bounds
-                terrain_width = self.cfg.terrain.terrain_width
-                terrain_length = self.cfg.terrain.terrain_length
-                
-                # Spacing between corridor centers
-                corridor_spacing_x = terrain_width / corridors_per_row
-                corridor_spacing_y = terrain_length / corridors_per_row
-                
-                for robot_id in range(self.num_envs):
-                    row = robot_id // corridors_per_row
-                    col = robot_id % corridors_per_row
-                    
-                    # Place robot at the start of its corridor (centered)
-                    start_x = col * corridor_spacing_x - terrain_width/2 + corridor_spacing_x/2
-                    start_y = row * corridor_spacing_y - terrain_length/2 + 2.0  # 2m from corridor start
-                    
-                    self.env_origins[robot_id, 0] = start_x
-                    self.env_origins[robot_id, 1] = start_y
-                    self.env_origins[robot_id, 2] = 0.0
-                
-                print(f"Placed {self.num_envs} robots in individual corridors ({corridors_per_row}x{corridors_per_row})")
-                return
-            
-            # Original random placement for wall-based terrain
-            # Get terrain grid boundaries - use actual terrain origins
-            grid_bounds = self.terrain.env_origins
-            
-            # Calculate the middle spawn area: outer border is always 1, middle is dynamic
-            border_size = 1  # 1 cell border on all sides
-            spawn_rows = self.terrain.cfg.num_rows - 2 * border_size  # Total - 2 border cells
-            spawn_cols = self.terrain.cfg.num_cols - 2 * border_size  # Total - 2 border cells
-            rows_offset = border_size  # Start after 1-cell border
-            cols_offset = border_size  # Start after 1-cell border
-            
-            # Get the bounds of the middle spawn grid
-            middle_grid = grid_bounds[rows_offset:rows_offset+spawn_rows, cols_offset:cols_offset+spawn_cols]
-            min_x = np.min(middle_grid[:, :, 0]) - self.terrain.cfg.terrain_length/2
-            max_x = np.max(middle_grid[:, :, 0]) + self.terrain.cfg.terrain_length/2  
-            min_y = np.min(middle_grid[:, :, 1]) - self.terrain.cfg.terrain_width/2
-            max_y = np.max(middle_grid[:, :, 1]) + self.terrain.cfg.terrain_width/2
-            
-            grid_center_x = (min_x + max_x) / 2
-            grid_center_y = (min_y + max_y) / 2
-            
-            # Place robots at the edge of terrain, ready to enter obstacle course
-            terrain_size = max(max_x - min_x, max_y - min_y)
-            radius = terrain_size * 0.6  # Just at the edge of obstacle area
-            num_cols = 8
-            spacing = 2.0  # Increased spacing to prevent inter-robot visibility
-            
-            # Safe spawning parameters - balanced for good distribution and safety
-            min_robot_distance = 3.0  # Increased spacing between robots
-            safe_wall_distance = 0.8  # Safe margin from walls
-            
-            # Generate safe spawn positions avoiding walls
-            spawn_positions = torch.zeros(self.num_envs, 2, device=self.device)
-            
-            # Keep trying until all robots are placed safely
-            for robot_idx in range(self.num_envs):
-                max_attempts = 100  # Much higher attempt count
-                placed = False
-                
-                for attempt in range(max_attempts):
-                    # Random position within terrain bounds
-                    pos_x = torch.rand(1, device=self.device) * (max_x - min_x - 2*safe_wall_distance) + (min_x + safe_wall_distance)
-                    pos_y = torch.rand(1, device=self.device) * (max_y - min_y - 2*safe_wall_distance) + (min_y + safe_wall_distance)
-                    candidate_pos = torch.tensor([pos_x, pos_y], device=self.device).squeeze()
-                    
-                    # Check if position is safe from walls
-                    safe_from_walls = True
-                    if hasattr(self.terrain, 'wall_positions') and len(self.terrain.wall_positions) > 0:
-                        for wall_x, wall_y, wall_radius in self.terrain.wall_positions:
-                            wall_distance = torch.sqrt((candidate_pos[0] - wall_x)**2 + (candidate_pos[1] - wall_y)**2)
-                            if wall_distance < (wall_radius + safe_wall_distance):
-                                safe_from_walls = False
-                                break
-                    
-                    # Check distance from other robots
-                    safe_from_robots = True
-                    for other_idx in range(robot_idx):
-                        robot_distance = torch.norm(candidate_pos - spawn_positions[other_idx])
-                        if robot_distance < min_robot_distance:
-                            safe_from_robots = False
-                            break
-                    
-                    if safe_from_walls and safe_from_robots:
-                        spawn_positions[robot_idx] = candidate_pos
-                        placed = True
-                        break
-                
-                if not placed:
-                    print(f"Warning: Could not place robot {robot_idx} after {max_attempts} attempts!")
-            
-            print(f"Robot placement completed")
-            
-            # Set final positions on flat terrain
-            self.env_origins[:, :2] = spawn_positions 
-            self.env_origins[:, 2] = 0.0  # Flat terrain at height 0
-                
-        else:
-            super()._get_env_origins()
+        """Simple grid placement for flat terrain with configured spacing"""
+        # Let parent class handle the grid placement with env_spacing
+        super()._get_env_origins()
     
   
     def _reset_root_states(self, env_ids):
-        """Override to set safe initial positions without random offset"""
-        # Set base position WITHOUT random offset - keep safe spawn positions
-        self.root_states[env_ids] = self.base_init_state
-        self.root_states[env_ids, :3] += self.env_origins[env_ids]
+        """Override to add random yaw if configured"""
+        # Call parent reset
+        super()._reset_root_states(env_ids)
         
-        # Set zero initial velocities for stable start
-        self.root_states[env_ids, 7:13] = torch.zeros((len(env_ids), 6), device=self.device)
-        
-        # Set random orientations for robustness (fully random yaw)
-        for env_id in env_ids:
-            # Fully random yaw orientation for maximum robustness
-            random_yaw = torch.rand(1, device=self.device) * 2 * np.pi  # 0 to 2π radians
+        # Add random yaw if configured
+        if hasattr(self.cfg.init_state, 'random_yaw') and self.cfg.init_state.random_yaw:
+            for env_id in env_ids:
+                # Random yaw orientation for variety
+                random_yaw = torch.rand(1, device=self.device) * 2 * np.pi  # 0 to 2π radians
+                
+                quat = torch.tensor([0.0, 0.0, torch.sin(random_yaw / 2), torch.cos(random_yaw / 2)], device=self.device)
+                self.root_states[env_id, 3:7] = quat
             
-            quat = torch.tensor([0.0, 0.0, torch.sin(random_yaw / 2), torch.cos(random_yaw / 2)], device=self.device)
-            self.root_states[env_id, 3:7] = quat
-        
-        # Apply the reset
-        env_ids_int32 = env_ids.to(dtype=torch.int32)
-        self.gym.set_actor_root_state_tensor_indexed(self.sim,
-                                                     gymtorch.unwrap_tensor(self.root_states),
-                                                     gymtorch.unwrap_tensor(env_ids_int32), len(env_ids_int32))
+            # Apply the reset with new orientations
+            env_ids_int32 = env_ids.to(dtype=torch.int32)
+            self.gym.set_actor_root_state_tensor_indexed(self.sim,
+                                                         gymtorch.unwrap_tensor(self.root_states),
+                                                         gymtorch.unwrap_tensor(env_ids_int32), len(env_ids_int32))
     
     def _create_trimesh(self):
         """Adds a triangle mesh terrain to the simulation with obstacles"""
@@ -237,6 +125,30 @@ class GO2Robot(LeggedRobot):
         self.height_samples = (
             torch.tensor(self.terrain.heightsamples)
             .view(self.terrain.tot_rows, self.terrain.tot_cols)
+            .to(self.device)
+        )
+    
+    def _create_heightfield(self):
+        """Adds a heightfield terrain to the simulation"""
+        hf_params = gymapi.HeightFieldParams()
+        hf_params.transform.p.x = -self.terrain.cfg.border_size
+        hf_params.transform.p.y = -self.terrain.cfg.border_size  
+        hf_params.transform.p.z = 0.0
+        hf_params.static_friction = self.cfg.terrain.static_friction
+        hf_params.dynamic_friction = self.cfg.terrain.dynamic_friction
+        hf_params.restitution = self.cfg.terrain.restitution
+
+        # Isaac Gym add_heightfield takes (sim, height_array, HeightFieldParams)
+        # Scaling is handled by the height values and terrain generation
+        self.gym.add_heightfield(
+            self.sim, 
+            self.terrain.heightsamples,
+            hf_params
+        )
+        
+        self.height_samples = (
+            torch.tensor(self.terrain.heightsamples)
+            .view(self.terrain.tot_rows, self.terrain.tot_cols)  
             .to(self.device)
         )
     

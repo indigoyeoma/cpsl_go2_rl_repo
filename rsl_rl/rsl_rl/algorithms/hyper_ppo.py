@@ -180,12 +180,20 @@ class HyperPPO:
         """
         if self.actor_critic.is_recurrent:
             self.transition.hidden_states = self.actor_critic.get_hidden_states()
+        
+        # Get current architecture descriptors for tracking
+        arch_descriptors = None
+        if self.hyper_enabled and hasattr(self.actor_critic, 'get_current_arch_descriptors'):
+            arch_descriptors = self.actor_critic.get_current_arch_descriptors()
+            
         # Compute the actions and values - depth now included in observations
-        self.transition.actions = self.actor_critic.act(obs).detach()
-        self.transition.values = self.actor_critic.evaluate(critic_obs).detach()
+        self.transition.actions = self.actor_critic.act(obs, arch_descriptors=arch_descriptors).detach()
+        self.transition.values = self.actor_critic.evaluate(critic_obs, arch_descriptors=arch_descriptors).detach()
         self.transition.actions_log_prob = self.actor_critic.get_actions_log_prob(self.transition.actions).detach()
         self.transition.action_mean = self.actor_critic.action_mean.detach()
         self.transition.action_sigma = self.actor_critic.action_std.detach()
+        # HyperPPO: Store architecture descriptors with transition
+        self.transition.arch_descriptors = arch_descriptors
         # need to record obs and critic_obs before env.step()
         self.transition.observations = obs
         self.transition.critic_observations = critic_obs
@@ -243,9 +251,9 @@ class HyperPPO:
                 minibatch_generator = self.storage.mini_batch_generator(self.num_mini_batches, 1)  # 1 epoch at a time
             
             minibatch_in_epoch = 0
-            # FOR EACH MINIBATCH IN THIS EPOCH (e.g., 16 minibatches)
+            # FOR EACH MINIBATCH IN THIS EPOCH (e.g., 16 minibatches)  
             for obs_batch, critic_obs_batch, actions_batch, target_values_batch, advantages_batch, returns_batch, old_actions_log_prob_batch, \
-                old_mu_batch, old_sigma_batch, hid_states_batch, masks_batch in minibatch_generator:
+                old_mu_batch, old_sigma_batch, hid_states_batch, arch_descriptors_batch in minibatch_generator:
 
                 minibatch_in_epoch += 1
                 total_weight_regenerations += 1
@@ -257,9 +265,9 @@ class HyperPPO:
                     self.actor_critic.regenerate_weights()  # calls change_graph(repeat_sample=True)
                 
                 # Standard PPO forward pass with fresh weights
-                self.actor_critic.act(obs_batch, masks=masks_batch, hidden_states=hid_states_batch[0])
+                self.actor_critic.act(obs_batch, masks=masks_batch, hidden_states=hid_states_batch[0], arch_descriptors=arch_descriptors_batch)
                 actions_log_prob_batch = self.actor_critic.get_actions_log_prob(actions_batch)
-                value_batch = self.actor_critic.evaluate(critic_obs_batch, masks=masks_batch, hidden_states=hid_states_batch[1])
+                value_batch = self.actor_critic.evaluate(critic_obs_batch, masks=masks_batch, hidden_states=hid_states_batch[1], arch_descriptors=arch_descriptors_batch)
                 mu_batch = self.actor_critic.action_mean
                 sigma_batch = self.actor_critic.action_std
                 entropy_batch = self.actor_critic.entropy

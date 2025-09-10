@@ -19,6 +19,81 @@ def layer_init(layer, std=np.sqrt(2), bias_const=0.0):
     return layer
 
 
+class ArchConditionedCritic(nn.Module):
+    """Architecture-conditioned critic network with Depth + State + Architecture inputs (asymmetric design)"""
+    
+    def __init__(self, state_dim, arch_descriptor_dim, device, input_size=84):
+        super().__init__()
+        self.device = device
+        self.state_dim = state_dim
+        self.input_size = input_size
+        
+        # Process depth observations with CNN (privileged info for critic)
+        depth_features_dim = 256
+        self.depth_encoder = nn.Sequential(
+            # Input: [batch, 1, 84, 84] - single channel depth
+            layer_init(nn.Conv2d(1, 32, 8, stride=4, padding=0)),  # → [batch, 32, 20, 20]
+            nn.ReLU(),
+            layer_init(nn.Conv2d(32, 64, 4, stride=2, padding=1)), # → [batch, 64, 10, 10] 
+            nn.ReLU(),
+            layer_init(nn.Conv2d(64, 128, 4, stride=2, padding=1)), # → [batch, 128, 5, 5]
+            nn.ReLU(),
+            layer_init(nn.Conv2d(128, 256, 3, stride=1, padding=1)), # → [batch, 256, 5, 5]
+            nn.ReLU(),
+            nn.AdaptiveAvgPool2d((2, 2)),                           # → [batch, 256, 2, 2]
+            nn.Flatten(),                                           # → [batch, 1024]
+            layer_init(nn.Linear(1024, depth_features_dim))         # → [batch, 256]
+        )
+        
+        # Process state information (privileged info for critic)
+        state_features_dim = 128
+        self.state_encoder = nn.Sequential(
+            layer_init(nn.Linear(state_dim, 256)),
+            nn.ReLU(),
+            layer_init(nn.Linear(256, state_features_dim))
+        )
+        
+        # Process architecture descriptor
+        arch_embedding_dim = 128
+        self.arch_embedding = nn.Sequential(
+            layer_init(nn.Linear(arch_descriptor_dim, 64)),
+            nn.ReLU(),
+            layer_init(nn.Linear(64, arch_embedding_dim))
+        )
+        
+        # Combine all features: Depth + State + Architecture
+        combined_dim = depth_features_dim + state_features_dim + arch_embedding_dim  # 256 + 128 + 128 = 512
+        
+        self.critic = nn.Sequential(
+            layer_init(nn.Linear(combined_dim, 512)),
+            nn.ReLU(),
+            layer_init(nn.Linear(512, 256)),
+            nn.ReLU(),
+            layer_init(nn.Linear(256, 1), std=1.0)
+        )
+        
+    def forward(self, obs_dict, arch_descriptors):
+        """
+        Forward pass with depth + state + architecture
+        
+        Args:
+            obs_dict: Dict with 'depth' and 'state' keys
+            arch_descriptors: Architecture descriptors [batch, arch_descriptor_dim]
+        """
+        # Extract depth and state from observation dictionary
+        depth_obs = obs_dict["depth"]  # [batch, 1, 84, 84]
+        state_obs = obs_dict["state"]  # [batch, state_dim]
+        
+        # Process all inputs separately
+        depth_features = self.depth_encoder(depth_obs)  # [batch, 256]
+        state_features = self.state_encoder(state_obs)  # [batch, 128] 
+        arch_embedding = self.arch_embedding(arch_descriptors)  # [batch, 128]
+        
+        # Combine all privileged information
+        combined = torch.cat([depth_features, state_features, arch_embedding], dim=1)  # [batch, 512]
+        return self.critic(combined).squeeze(-1)
+
+
 class HyperActorWrapper(nn.Module):
     """
     HyperPPO Actor that generates weights for different CNN+MLP architectures
@@ -717,26 +792,70 @@ class HyperPPOActorCritic(nn.Module):
             architecture_sampling_mode="uniform"
         )
         
-        # Simple MLP critic for privileged observations (48-dim)
-        activation_fn = get_activation(activation)
-        critic_layers = []
-        input_dim = num_critic_obs  # 48 privileged observations
+        # Architecture-conditioned critic with depth + state + architecture inputs
+        # Get architecture descriptor dimension from hyper_actor
+        arch_descriptor_dim = 16  # Fixed descriptor length from generate_architectures.py
+        privileged_state_dim = 48  # Privileged observations (no depth)
         
-        for hidden_dim in critic_hidden_dims:
-            critic_layers.extend([
-                nn.Linear(input_dim, hidden_dim),
-                activation_fn
-            ])
-            input_dim = hidden_dim
-        
-        critic_layers.append(nn.Linear(input_dim, 1))
-        self.critic = nn.Sequential(*critic_layers)
+        self.critic = ArchConditionedCritic(
+            state_dim=privileged_state_dim,
+            arch_descriptor_dim=arch_descriptor_dim,
+            device=self.device,
+            input_size=84  # Depth image size
+        )
         
         self.distribution = None
         Normal.set_default_validate_args = False
         
         # HyperPPO Actor-Critic initialized
     
+    def _preprocess_depth(self, observations):
+        """
+        Preprocess observations to extract depth images
+        
+        Args:
+            observations: Combined observations [batch, 48 + 84*84]
+                         = [state(48) + flattened_depth(7056)]
+        
+        Returns:
+            dict with 'depth' and 'state' keys
+        """
+        batch_size = observations.shape[0]
+        
+        # Split observations: state (48) + flattened depth (84*84)
+        state_obs = observations[:, :48]  # [batch, 48]
+        depth_flat = observations[:, 48:]  # [batch, 7056]
+        
+        # Reshape depth to image format [batch, 1, 84, 84]
+        depth_images = depth_flat.view(batch_size, 1, 84, 84)
+        
+        return {
+            'depth': depth_images,  # [batch, 1, 84, 84]
+            'state': state_obs      # [batch, 48]
+        }
+    
+    def _prepare_critic_obs(self, critic_observations):
+        """Prepare observations for architecture-conditioned critic"""
+        return self._preprocess_depth(critic_observations)
+    
+    def get_current_arch_descriptors(self):
+        """Get current architecture descriptors from hyper_actor"""
+        if hasattr(self.hyper_actor, 'arch_descriptors_per_state'):
+            return self.hyper_actor.arch_descriptors_per_state
+        else:
+            # Fallback: get descriptors from sampled architectures
+            if hasattr(self.hyper_actor, 'list_of_sampled_shape_inds') and self.hyper_actor.list_of_sampled_shape_inds:
+                # Use first architecture descriptor as fallback
+                desc = self.hyper_actor.list_of_sampled_shape_inds[0].flatten()
+                # Pad or truncate to fixed length 16
+                if len(desc) < 16:
+                    desc = torch.cat([desc, torch.zeros(16 - len(desc), device=desc.device)])
+                else:
+                    desc = desc[:16]
+                return desc.unsqueeze(0)  # [1, 16]
+            else:
+                # Emergency fallback: zeros
+                return torch.zeros(1, 16, device=self.device)
     
     def reset(self, dones=None):
         """Reset function - required by interface"""
@@ -769,6 +888,11 @@ class HyperPPOActorCritic(nn.Module):
     
     def act(self, observations, **kwargs):
         """Sample action from policy distribution"""
+        # Extract arch_descriptors from kwargs if provided (for minibatch training)
+        arch_descriptors = kwargs.get('arch_descriptors', None)
+        if arch_descriptors is not None:
+            # Store for tracking during minibatch updates
+            self.current_arch_descriptors = arch_descriptors
         self.update_distribution(observations)
         return self.distribution.sample()
     
@@ -782,9 +906,23 @@ class HyperPPOActorCritic(nn.Module):
         return mu
     
     def evaluate(self, critic_observations, **kwargs):
-        """Evaluate value function using privileged observations only (asymmetric)"""
-        # Use simple MLP critic on privileged observations (48-dim)
-        return self.critic(critic_observations)
+        """Evaluate value function using architecture-conditioned critic"""
+        # Extract arch_descriptors from kwargs if provided (for minibatch training)
+        arch_descriptors = kwargs.get('arch_descriptors', None)
+        if arch_descriptors is None:
+            # Get current architecture descriptors as fallback
+            arch_descriptors = self.get_current_arch_descriptors()
+        
+        # Expand arch descriptors to match batch size
+        batch_size = critic_observations.shape[0]
+        if arch_descriptors.shape[0] == 1 and batch_size > 1:
+            arch_descriptors = arch_descriptors.expand(batch_size, -1)
+        
+        # Prepare observations dict for critic
+        obs_dict = self._prepare_critic_obs(critic_observations)
+        
+        # Use architecture-conditioned critic
+        return self.critic(obs_dict, arch_descriptors)
     
     def resample_architectures(self):
         """Resample architectures for new epoch (call AFTER epoch completes)"""
@@ -797,6 +935,16 @@ class HyperPPOActorCritic(nn.Module):
     def get_training_metrics(self):
         """Get GHN training metrics (PPO style)"""
         return self.hyper_actor.get_training_metrics()
+    
+    def get_current_arch_descriptors(self):
+        """Get current architecture descriptors for tracking"""
+        if hasattr(self, 'current_arch_descriptors') and self.current_arch_descriptors is not None:
+            return self.current_arch_descriptors.clone().detach()
+        # Try to get from hyper_actor if available
+        if hasattr(self.hyper_actor, 'current_arch_descriptors') and self.hyper_actor.current_arch_descriptors is not None:
+            return self.hyper_actor.current_arch_descriptors.clone().detach()
+        # Fallback: return zero descriptors if no architecture is set
+        return torch.zeros(1, 16, device=self.device)
     
     def compute_distillation_loss(self, observations) -> torch.Tensor:
         """
@@ -1022,3 +1170,24 @@ class CustomVisualActorCritic(nn.Module):
         depth_features = self._encode_depth(depth_images)
         critic_input = torch.cat([base_obs, depth_features], dim=1)
         return self.critic(critic_input)
+    
+    def get_current_arch_descriptors(self):
+        """Get current architecture descriptors for tracking"""
+        if hasattr(self, 'current_arch_descriptors') and self.current_arch_descriptors is not None:
+            return self.current_arch_descriptors.clone().detach()
+        # Fallback: return zero descriptors if no architecture is set
+        return torch.zeros(1, 16, device=self.device)
+    
+    def get_hidden_states(self):
+        """Get hidden states - not implemented for non-recurrent networks"""
+        return None
+    
+    def regenerate_weights(self):
+        """Regenerate weights using GHN (for HyperPPO minibatch isolation)"""
+        if hasattr(self, 'change_graph'):
+            self.change_graph(repeat_sample=True)
+    
+    def resample_architectures(self):
+        """Resample architectures for next rollout (for HyperPPO)"""
+        if hasattr(self, 'change_graph'):
+            self.change_graph(repeat_sample=False)
