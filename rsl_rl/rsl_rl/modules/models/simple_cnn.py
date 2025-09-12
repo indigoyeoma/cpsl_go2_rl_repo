@@ -6,7 +6,7 @@ from torch import nn as nn
 
 
 class SimpleCNN(nn.Module):
-    r"""A Simple 3-Conv CNN followed by a fully connected layer
+    r"""A 4-layer CNN with 3x3 kernels for optimal visual RL performance
     Takes in observations and produces an embedding of the rgb and/or depth components
     Args:
         observation_space: The observation_space of the agent.  Shape should be [H, W, C]
@@ -30,11 +30,11 @@ class SimpleCNN(nn.Module):
         else:
             self._n_input_depth = 0
 
-        # kernel size for different CNN layers - optimized for 64x64 input
-        self._cnn_layers_kernel_size = [(8, 8), (4, 4), (3, 3)]
+        # kernel size for different CNN layers - 4 layers with 3x3 kernels only
+        self._cnn_layers_kernel_size = [(3, 3), (3, 3), (3, 3), (3, 3)]
 
-        # strides for different CNN layers - optimized for 64x64 input
-        self._cnn_layers_stride = [(4, 4), (2, 2), (1, 1)]
+        # strides for different CNN layers - optimized for 84x84 input  
+        self._cnn_layers_stride = [(2, 2), (2, 2), (2, 2), (2, 2)]
 
         if self._n_input_rgb > 0:
             cnn_dims = np.array(
@@ -53,46 +53,69 @@ class SimpleCNN(nn.Module):
             ):
                 cnn_dims = self._conv_output_dim(
                     dimension=cnn_dims,
-                    padding=np.array([0, 0], dtype=np.float32),
+                    padding=np.array([1, 1], dtype=np.float32),
                     dilation=np.array([1, 1], dtype=np.float32),
                     kernel_size=np.array(kernel_size, dtype=np.float32),
                     stride=np.array(stride, dtype=np.float32),
                 )
 
             self.cnn = nn.Sequential(
+                # 4-layer CNN with 3x3 kernels for optimal visual RL performance
+                # Layer 1: 84x84 → 42x42
                 nn.Conv2d(
                     in_channels=self._n_input_rgb + self._n_input_depth,
                     out_channels=32,
                     kernel_size=self._cnn_layers_kernel_size[0],
                     stride=self._cnn_layers_stride[0],
+                    padding=1,
                 ),
                 nn.ReLU(True),
+                
+                # Layer 2: 42x42 → 21x21
                 nn.Conv2d(
                     in_channels=32,
                     out_channels=64,
                     kernel_size=self._cnn_layers_kernel_size[1],
                     stride=self._cnn_layers_stride[1],
+                    padding=1,
                 ),
                 nn.ReLU(True),
+                
+                # Layer 3: 21x21 → 11x11
                 nn.Conv2d(
                     in_channels=64,
-                    out_channels=32,
+                    out_channels=128,
                     kernel_size=self._cnn_layers_kernel_size[2],
                     stride=self._cnn_layers_stride[2],
+                    padding=1,
                 ),
-                #  nn.ReLU(True),
+                nn.ReLU(True),
+                
+                # Layer 4: 11x11 → 6x6
+                nn.Conv2d(
+                    in_channels=128,
+                    out_channels=256,
+                    kernel_size=self._cnn_layers_kernel_size[3],
+                    stride=self._cnn_layers_stride[3],
+                    padding=1,
+                ),
+                nn.ReLU(True),
+                
+                # Flatten and project to output size
                 nn.Flatten(),
-                nn.Linear(32 * cnn_dims[0] * cnn_dims[1], output_size),
+                nn.Linear(256 * int(cnn_dims[0]) * int(cnn_dims[1]), output_size),
                 nn.ReLU(True),
             )
 
         self.layer_init()
         
-        # Print architecture for 64x64 depth input verification
+        # Print architecture for 84x84 depth input verification
         if not self.is_blind:
-            print(f"SimpleCNN initialized for input size: {cnn_dims}")
-            print(f"Final CNN output size before linear: {int(32 * cnn_dims[0] * cnn_dims[1])}")
-            print(f"SimpleCNN output size: {output_size}")
+            print(f"📊 4-Layer CNN initialized for input size: {cnn_dims}")
+            print(f"   Layer progression: 84×84 → 42×42 → 21×21 → 11×11 → 6×6")
+            print(f"   Channel progression: 1 → 32 → 64 → 128 → 256")
+            print(f"   Final CNN features: {int(256 * cnn_dims[0] * cnn_dims[1])}")
+            print(f"   Output embedding size: {output_size}")
 
     def _conv_output_dim(
         self, dimension, padding, dilation, kernel_size, stride
@@ -125,6 +148,7 @@ class SimpleCNN(nn.Module):
     def layer_init(self):
         for layer in self.cnn:  # type: ignore
             if isinstance(layer, (nn.Conv2d, nn.Linear)):
+                # Kaiming initialization for Conv2d and Linear layers
                 nn.init.kaiming_normal_(
                     layer.weight, nn.init.calculate_gain("relu")
                 )

@@ -32,12 +32,12 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 
-from rsl_rl.modules import ActorCritic, ActorCriticRMA
+from rsl_rl.modules import ActorCritic, VisualActorCritic
 from rsl_rl.storage import RolloutStorage
 import wandb
 
 class PPO:
-    actor_critic: ActorCriticRMA
+    actor_critic: ActorCritic
     def __init__(self,
                  actor_critic,
                  estimator=None,

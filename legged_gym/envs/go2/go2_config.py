@@ -1,17 +1,8 @@
 from legged_gym.envs.base.legged_robot_config import LeggedRobotCfg, LeggedRobotCfgPPO
 
 class GO2RoughCfg( LeggedRobotCfg ):
-    class env( LeggedRobotCfg.env ):
-        num_envs = 256  # Reduced to 256 for faster collection
-        num_observations = 48 + 84*84  # 48 + 7056 = 7104 total
-        num_privileged_obs = 48
-        env_spacing = 8.0  # 5m spacing between robots for safety
-        
-
-        
     class init_state( LeggedRobotCfg.init_state ):
         pos = [0.0, 0.0, 0.42] # x,y,z [m]
-        random_yaw = True  # Enable random yaw for varied initial orientations
         default_joint_angles = { # = target angles [rad] when action = 0.0
             'FL_hip_joint': 0.1,   # [rad]
             'RL_hip_joint': 0.1,   # [rad]
@@ -41,101 +32,26 @@ class GO2RoughCfg( LeggedRobotCfg ):
 
     class asset( LeggedRobotCfg.asset ):
         file = '{LEGGED_GYM_ROOT_DIR}/resources/robots/go2/urdf/go2.urdf'
-        name = "go2_locomotion"
+        name = "go2"
         foot_name = "foot"
         penalize_contacts_on = ["thigh", "calf"]
-        terminate_after_contacts_on = ["base"]  # Only terminate on hard collisions
+        terminate_after_contacts_on = ["base"]
         self_collisions = 1 # 1 to disable, 0 to enable...bitwise filter
 
-    class terrain( LeggedRobotCfg.terrain ):
-        mesh_type = 'plane'  # Simple infinite plane for fastest collection
-        curriculum = False
-    
-    class depth:
-        use_camera = True  # Enabled for visual RL
-        camera_num_envs = 256  # Cameras for 256 robots
-        camera_terrain_num_rows = 8   # Grid for 256 robots  
-        camera_terrain_num_cols = 8   # Grid for 256 robots
-        
-        # Camera mounting position on Go2
-        position = [0.27, 0, 0.08]  # 27cm forward, 8cm up (lower for better ground view)
-        position_rand = 0.01  # Small position randomization for robustness
-        angle = [0, 0]  # camera angle [min, max] (positive pitch down)
-        
-        # Camera resolution settings (D435i specs) - KEEP 84x84 FOR SIM2REAL
-        original = (424, 240)  # D435i depth resolution
-        resized = (84, 84)     # Keep 84x84 for sim2real transfer
-        horizontal_fov = 87    # D435i horizontal FOV (87 degrees)
-        
-        # Depth range for obstacle detection (D435i specs)
-        near_clip = 0.3   # 30cm minimum range
-        far_clip = 3.0    # 3m maximum range 
-        dis_noise = 0.01   # D435i realistic noise: ~1cm std dev (average across range)
-        
-        # No buffer needed - single frame processing
-        update_interval = 1    # Process every frame for best sim2real
-        buffer_len = 1         # single frame only
-  
-    class commands( LeggedRobotCfg.commands ):
-        class ranges:
-            lin_vel_x = [0.6, 1.0]      # Wider speed range for variety
-            lin_vel_y = [-0.1, 0.1]     # Moderate side-stepping
-            ang_vel_yaw = [0.0, 0.0]   # Allow turning for orientation correction
-            heading = [0.0, 0.0]     # Full rotation range for diverse training
-    
     class rewards( LeggedRobotCfg.rewards ):
         soft_dof_pos_limit = 0.9
-        base_height_target = 0.25  # Increased from 0.3 to prevent body dragging
-        only_positive_rewards = True  # Allow negative rewards for better gradient signal
-
+        base_height_target = 0.25
         class scales( LeggedRobotCfg.rewards.scales ):
             torques = -0.0002
             dof_pos_limits = -10.0
             
-            # Velocity tracking (most important for locomotion)
-            tracking_lin_vel = 1.5      # Strong reward for forward velocity
-            # tracking_ang_vel = 2.0      # Moderate reward for angular velocity
-            
-            # Height and stability
-            # base_height = -30.0         # Increased penalty to strongly maintain target height
-            # orientation = -5.0          # Li ht penalty for roll/pitch (allow some dynamics)
-            # lin_vel_z = -2.0           # Increased penalty for vertical velocity
-            
-            # Energy efficiency
-            # action_rate = -0.01         # Penalize rapid action changes
-            
-            # Collision avoidance  
-            # collision = -20.0           # Strong collision penalty     
-            
 class GO2RoughCfgPPO( LeggedRobotCfgPPO ):
-    class policy( LeggedRobotCfgPPO.policy ):
-        init_noise_std = 1.0
-        actor_hidden_dims = [512, 256, 128]  # Reduced network size for visual input
-        critic_hidden_dims = [512, 256, 128]  # Reduced network size for visual input
-        activation = 'elu'  # ELU often works better than ReLU for RL
-        
-        # HyperPPO specific parameters (commented out - using original)
-        # meta_batch_size = 2  # Number of architectures per iteration
-        # architecture_config_path = None  # Use default GO2 architectures
-        
+    class algorithm( LeggedRobotCfgPPO.algorithm ):
+        entropy_coef = 0.01
     class runner( LeggedRobotCfgPPO.runner ):
         run_name = ''
-        experiment_name = 'visual_go2'
-        # Standard visual RL with CNN+MLP
-        policy_class_name = 'ActorCritic'  # Standard ActorCritic
-        algorithm_class_name = 'PPO'       # Standard PPO
-        save_interval = 500  
-        max_iterations = 100_000
-        
-    class algorithm( LeggedRobotCfgPPO.algorithm ):
-        # Optimized for visual RL with CNN processing
-        num_learning_epochs = 3  # Increased for better visual feature learning
-        num_mini_batches = 16  # 1024 envs ÷ 16 = 64 samples per batch (optimal for visual learning)
-        
-        # HyperPPO specific settings
-        value_loss_coef = 1.0    # Standard value loss coefficient
-        entropy_coef = 0.01      # Standard entropy coefficient
-        learning_rate = 3e-4     # Standard learning rate
+        experiment_name = 'rough_go2'
+        max_iterations = 2000
 
   
 

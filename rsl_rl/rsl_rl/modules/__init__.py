@@ -28,6 +28,7 @@
 #
 # Copyright (c) 2021 ETH Zurich, Nikita Rudin
 
-from .actor_critic import ActorCritic, ActorCriticRMA, VisualActorCritic
+from .actor_critic import ActorCritic
+from .visual_actor_critic import VisualActorCritic
 from .actor_critic_recurrent import ActorCriticRecurrent
 from .hyper_actor_critic import CustomActorCritic, CustomVisualActorCritic, HyperPPOActorCritic, HyperActorWrapper

@@ -18,16 +18,52 @@ def play(args):
     env_cfg, train_cfg = task_registry.get_cfgs(name=args.task)
     # override some parameters for testing
     env_cfg.env.num_envs = min(env_cfg.env.num_envs, 10)
-    env_cfg.terrain.num_rows = 5
-    env_cfg.terrain.num_cols = 5
+    env_cfg.terrain.num_rows = 3  # Reduce to 3x3 grid for closer spacing
+    env_cfg.terrain.num_cols = 3
+    
+    # Force smaller terrain spacing to bring robots closer together
+    if hasattr(env_cfg.terrain, 'terrain_length'):
+        env_cfg.terrain.terrain_length = 2.0  # Reduce from default (usually 8m) to 2m
+        env_cfg.terrain.terrain_width = 2.0   # Reduce from default (usually 8m) to 2m
+    
+    # Also try setting environment spacing directly
+    if hasattr(env_cfg, 'env_spacing'):
+        env_cfg.env_spacing = 2.0  # Set environment spacing to 2m
+    if hasattr(env_cfg.env, 'env_spacing'):
+        env_cfg.env.env_spacing = 2.0  # Alternative location for env spacing
     env_cfg.terrain.curriculum = False
     env_cfg.noise.add_noise = False
     env_cfg.domain_rand.randomize_friction = False
     env_cfg.domain_rand.push_robots = False
     
+    # Increase camera range and FOV to see other robots better
+    if hasattr(env_cfg, 'depth'):
+        env_cfg.depth.far_clip = 15.0  # Increase from 3.0m to 15.0m  
+        env_cfg.depth.horizontal_fov = 120  # Increase from 87° to 120° (wider view)
+        env_cfg.depth.angle = [-0.3, 0]  # Tilt camera downward to see other robots on ground
+    
     # prepare environment
     env, _ = task_registry.make_env(name=args.task, args=args, env_cfg=env_cfg)
     obs = env.get_observations()
+
+    # Enable camera display for depth_go2 task in play mode
+    if args.task == "depth_go2" and hasattr(env, 'enable_camera_display'):
+        # Print environment positions for debugging
+        print(f"Number of environments: {env.num_envs}")
+        print(f"Terrain size: {env_cfg.terrain.num_rows}x{env_cfg.terrain.num_cols}")
+        print(f"Camera FOV: {env_cfg.depth.horizontal_fov} degrees")
+        print(f"Camera range: {env_cfg.depth.near_clip}m - {env_cfg.depth.far_clip}m")
+        if hasattr(env.cfg.terrain, 'terrain_length'):
+            print(f"Terrain spacing: {env.cfg.terrain.terrain_length}m x {env.cfg.terrain.terrain_width}m")
+            
+        # Print actual robot positions for debugging
+        print("Robot base positions:")
+        for i in range(min(5, env.num_envs)):  # Show first 5 robots
+            pos = env.root_states[i, :3].cpu().numpy()
+            print(f"  Robot {i}: x={pos[0]:.2f}, y={pos[1]:.2f}, z={pos[2]:.2f}")
+        
+        env.enable_camera_display(show_all=True)  # Show all 10 cameras simultaneously
+        print("Live camera feed enabled for play mode!")
 
     if args.web:
         web_viewer.setup(env)
@@ -47,6 +83,20 @@ def play(args):
         print('Exported policy as jit script to: ', path)
 
     actions = torch.zeros(env.num_envs, 12, device=env.device, requires_grad=False)
+    
+    # Override command resampling to use fixed forward command
+    def fixed_resample_commands(self, env_ids):
+        """Fixed forward walking command"""
+        self.commands[env_ids, 0] = 0.6  # lin_vel_x = 0.6 m/s forward 
+        self.commands[env_ids, 1] = torch.rand(len(env_ids), device=env.device) * 0.2 - 0.1  # lin_vel_y = small random [-0.1, 0.1]
+        self.commands[env_ids, 2] = 0.0  # ang_vel_yaw = 0.0 rad/s
+        
+    env._resample_commands = fixed_resample_commands.__get__(env, env.__class__)
+    
+    # Set initial forward command
+    env.commands[:, 0] = 0.6  # Forward 0.6 m/s 
+    env.commands[:, 1] = torch.rand(env.num_envs, device=env.device) * 0.2 - 0.1  # Small random sideways [-0.1, 0.1]
+    env.commands[:, 2] = 0.0  # No turning
 
     for i in range(10*int(env.max_episode_length)):
         # For VisualActorCritic, pass single depth frame
@@ -64,6 +114,11 @@ def play(args):
                         step_graphics=True,
                         render_all_camera_sensors=True,
                         wait_for_page_load=True)
+
+    # Cleanup camera display
+    if args.task == "depth_go2" and hasattr(env, 'disable_camera_display'):
+        env.disable_camera_display()
+        print("Camera display closed.")
 
 if __name__ == '__main__':
     EXPORT_POLICY = True

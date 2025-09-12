@@ -85,7 +85,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 
-from rsl_rl.modules import ActorCritic, ActorCriticRMA
+from rsl_rl.modules import ActorCritic
 from rsl_rl.modules.hyper_actor_critic import HyperPPOActorCritic
 from rsl_rl.storage import RolloutStorage
 import wandb
