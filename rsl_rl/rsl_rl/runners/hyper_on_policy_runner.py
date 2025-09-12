@@ -15,8 +15,8 @@ import torch.nn as nn
 from torch.distributions import Normal
 from torch.utils.tensorboard import SummaryWriter
 
-from rsl_rl.algorithms import PPO
-from rsl_rl.modules import ActorCritic, ActorCriticRecurrent
+from rsl_rl.algorithms import HyperPPO
+from rsl_rl.modules import HyperPPOActorCritic
 from rsl_rl.env import VecEnv
 
 # Import HyperPPO components from existing infrastructure
@@ -38,7 +38,7 @@ class ArchConditionedCritic(nn.Module):
         self.device = device
         self.state_dim = state_dim
         
-        # Process depth observations with CNN (privileged info for critic) - matching ManiSkill pattern
+        # Process depth observations with CNN
         depth_features_dim = 256
         self.depth_encoder = nn.Sequential(
             # Input: [batch, 1, 84, 84] - following ManiSkill 84x84 standard
@@ -55,7 +55,7 @@ class ArchConditionedCritic(nn.Module):
             layer_init(nn.Linear(1024, depth_features_dim))         # → [batch, 256]
         )
         
-        # Process state information (privileged info for critic)
+        # Process state information
         state_features_dim = 128
         self.state_encoder = nn.Sequential(
             layer_init(nn.Linear(state_dim, 256)),
@@ -125,7 +125,7 @@ class GO2HyperAgent(nn.Module):
         self.hyper_actor = hyper_actor
         self.device = device
         
-        # Initialize asymmetric architecture-conditioned critic (Depth + State + Architecture)
+        # Initialize architecture-conditioned critic
         self.critic = ArchConditionedCritic(state_dim, arch_descriptor_dim, device).to(device)
         
     def forward(self, obs):
@@ -138,7 +138,7 @@ class GO2HyperAgent(nn.Module):
             batch_size = obs.shape[0]
             depth_elements = depth_flat.shape[1]
             
-            # Expected: 84×84 = 7056 elements (after downsampling from 480×270)
+            # Expected: 84×84 = 7056 elements
             expected_elements = 84 * 84
             if depth_elements == expected_elements:
                 # Perfect! Environment is properly downsampling 480×270 → 84×84
@@ -149,7 +149,7 @@ class GO2HyperAgent(nn.Module):
                 
                 # Check for 480×270 raw input first
                 if depth_elements == 480 * 270:  # 129600
-                    print(f"📷 Raw 480×270 input detected, downsampling to 84×84")
+                    print(f"Raw 480x270 input detected, downsampling to 84x84")
                     depth_obs = depth_flat.view(batch_size, 1, 270, 480)
                 else:
                     # Detect other common sizes and upsample/downsample to 84×84
@@ -166,12 +166,12 @@ class GO2HyperAgent(nn.Module):
                     
                     if found_size:
                         h, w = found_size
-                        print(f"📷 Detected {h}×{w}, resampling to 84×84")
+                        print(f"Detected {h}x{w}, resampling to 84x84")
                         depth_obs = depth_flat.view(batch_size, 1, h, w)
                     else:
                         # Last resort
                         img_size = int(math.sqrt(depth_elements))
-                        print(f"📷 Assuming {img_size}×{img_size}, resampling to 84×84")  
+                        print(f"Assuming {img_size}x{img_size}, resampling to 84x84")  
                         depth_obs = depth_flat.view(batch_size, 1, img_size, img_size)
                 
                 # Downsample/upsample to target 84×84 
@@ -195,7 +195,7 @@ class GO2HyperAgent(nn.Module):
                 batch_size = obs.shape[0]
                 depth_elements = depth_flat.shape[1]
                 
-                # Expected: 84×84 = 7056 elements (after downsampling from 480×270)
+                # Expected: 84×84 = 7056 elements
                 expected_elements = 84 * 84
                 if depth_elements == expected_elements:
                     # Perfect! Environment is properly downsampling 480×270 → 84×84
@@ -272,46 +272,39 @@ class HyperOnPolicyRunner:
         else:
             num_critic_obs = self.env.num_obs
             
-        # Create standard ActorCritic
+        # Create HyperPPO ActorCritic
         policy_class_name = self.cfg["policy_class_name"]
+        if policy_class_name != "HyperPPOActorCritic":
+            raise ValueError(f"HyperOnPolicyRunner only supports HyperPPOActorCritic, got: {policy_class_name}")
         
-        if policy_class_name == "ActorCritic":
-            actor_critic = ActorCritic(
-                self.env.num_obs,
-                num_critic_obs,
-                self.env.num_actions,
-                **self.policy_cfg
-            ).to(self.device)
-        elif policy_class_name == "ActorCriticRecurrent":
-            actor_critic = ActorCriticRecurrent(
-                self.env.num_obs,
-                num_critic_obs,
-                self.env.num_actions,
-                **self.policy_cfg
-            ).to(self.device)
-        else:
-            raise ValueError(f"Unknown policy class: {policy_class_name}")
+        actor_critic = HyperPPOActorCritic(
+            self.env.num_obs,
+            num_critic_obs,
+            self.env.num_actions,
+            **self.policy_cfg
+        ).to(self.device)
         
-        # Create standard PPO algorithm
+        # Create HyperPPO algorithm
         algorithm_class_name = self.cfg["algorithm_class_name"]
-        if algorithm_class_name == "PPO":
-            self.alg = PPO(
-                actor_critic,
-                device=self.device,
-                **self.alg_cfg
-            )
-        else:
-            raise ValueError(f"Unknown algorithm class: {algorithm_class_name}")
+        if algorithm_class_name != "HyperPPO":
+            raise ValueError(f"HyperOnPolicyRunner only supports HyperPPO, got: {algorithm_class_name}")
         
-        # Initialize HyperPPO components
-        config_path = "/home/jiwoo/ws/go2_rl_jw/rsl_rl/rsl_rl/hyperppo/configs/architecture_go2_depth84_kernel3.json"
+        self.alg = HyperPPO(
+            actor_critic,
+            device=self.device,
+            **self.alg_cfg
+        )
+        
+        # Initialize HyperPPO components - get path from policy config
+        config_path = self.policy_cfg["architecture_config_path"]
         
         # Initialize HyperActor for weight generation
+        meta_batch_size = self.policy_cfg["meta_batch_size"]
         hyper_actor_module = hyperActor(
             act_dim=self.env.num_actions,
             obs_dim=48,  # GO2 state dimension
             architecture_config_path=config_path,
-            meta_batch_size=4,
+            meta_batch_size=meta_batch_size,
             device=self.device,
             multi_gpu=False,
             architecture_sampling_mode="uniform"
@@ -334,8 +327,8 @@ class HyperOnPolicyRunner:
         # Replace the critic in ActorCritic with our architecture-conditioned critic
         self.alg.actor_critic.critic = self.go2_agent.critic
         
-        # Initialize with first architecture
-        hyper_actor_module.change_graph(repeat_sample=True)
+        # Initial architecture sampling (like reference implementation)
+        hyper_actor_module.change_graph(repeat_sample=False)
         
         # Store for later access
         self.hyper_actor = hyper_actor_module
@@ -344,7 +337,7 @@ class HyperOnPolicyRunner:
         with open(config_path, 'r') as f:
             self.arch_data = json.load(f)
         self.architectures = self.arch_data['architectures']
-        self.meta_batch_size = 4
+        self.meta_batch_size = meta_batch_size
         
         self.num_steps_per_env = self.cfg["num_steps_per_env"]
         self.save_interval = self.cfg["save_interval"]
@@ -361,14 +354,14 @@ class HyperOnPolicyRunner:
 
         _, _ = self.env.reset()
         
-        print(f"🚀 HyperOnPolicyRunner initialized:")
-        print(f"  - Policy: {policy_class_name} (replaced with GO2HyperActor)")  
-        print(f"  - Algorithm: {algorithm_class_name}")
-        print(f"  - Device: {device}")
-        print(f"  - Environments: {self.env.num_envs}")
-        print(f"  - Steps per env: {self.num_steps_per_env}")
-        print(f"  - HyperActor architectures: {len(self.architectures)}")
-        print(f"  - Meta batch size: {self.meta_batch_size}")
+        print(f"HyperOnPolicyRunner initialized:")
+        print(f"  Policy: {policy_class_name} (replaced with GO2HyperActor)")  
+        print(f"  Algorithm: {algorithm_class_name}")
+        print(f"  Device: {device}")
+        print(f"  Environments: {self.env.num_envs}")
+        print(f"  Steps per env: {self.num_steps_per_env}")
+        print(f"  HyperActor architectures: {len(self.architectures)}")
+        print(f"  Meta batch size: {self.meta_batch_size}")
 
     def learn(self, num_learning_iterations, init_at_random_ep_len=False):
         """
@@ -399,9 +392,7 @@ class HyperOnPolicyRunner:
             start = time.time()
             
             # HyperPPO: Change architecture at start of each iteration
-            print(f"\n🧠 HyperPPO Iteration {it+1}/{tot_iter}")
             self.go2_agent.change_graph(repeat_sample=True)
-            print(f"  🔄 Architecture changed and weights regenerated")
 
             # Rollout
             with torch.inference_mode():
@@ -436,8 +427,7 @@ class HyperOnPolicyRunner:
             stop = time.time()
             learn_time = stop - start
             
-            # HyperPPO: Additional weight regenerations during update epochs
-            print(f"  ⚡ Weight regenerations during learning: {self.alg.num_learning_epochs * self.alg.num_mini_batches}")
+            # HyperPPO: Weight regenerations occur during learning epochs
 
             if self.log_dir is not None:
                 self.tot_timesteps += self.num_steps_per_env * self.env.num_envs
@@ -457,9 +447,29 @@ class HyperOnPolicyRunner:
                 self.writer.add_scalar('Perf/collection_time', collection_time, it)
                 self.writer.add_scalar('Perf/learning_time', learn_time, it)
                 
+                # Standard logging format like original OnPolicyRunner
+                mean_std = self.alg.actor_critic.std.mean() if hasattr(self.alg.actor_critic, 'std') else torch.tensor(0.0)
+                fps = int(self.num_steps_per_env * self.env.num_envs / (collection_time + learn_time))
+                
+                log_string = f" Learning iteration {it}/{tot_iter} "
+                log_string = f"{'#' * 80}\n{log_string.center(80, ' ')}\n\n"
+                log_string += f"{'Computation:':<35} {fps:.0f} steps/s (collection: {collection_time:.3f}s, learning {learn_time:.3f}s)\n"
+                log_string += f"{'Value function loss:':<35} {mean_value_loss:.4f}\n"
+                log_string += f"{'Surrogate loss:':<35} {mean_surrogate_loss:.4f}\n"
+                log_string += f"{'Mean action noise std:':<35} {mean_std.item():.2f}\n"
+                
                 if len(rewbuffer) > 0:
-                    print(f"  📊 Mean reward: {statistics.mean(rewbuffer):.2f}")
-                    print(f"  📈 Mean episode length: {statistics.mean(lenbuffer):.2f}")
+                    log_string += f"{'Mean reward:':<35} {statistics.mean(rewbuffer):.2f}\n"
+                    log_string += f"{'Mean episode length:':<35} {statistics.mean(lenbuffer):.2f}\n"
+                
+                log_string += f"{'-' * 80}\n"
+                log_string += f"{'Total timesteps:':<35} {self.tot_timesteps}\n"
+                log_string += f"{'Iteration time:':<35} {(collection_time + learn_time):.2f}s\n"
+                log_string += f"{'Total time:':<35} {self.tot_time:.2f}s\n"
+                eta = self.tot_time / (it + 1) * (tot_iter - it)
+                log_string += f"{'ETA:':<35} {eta:.1f}s\n"
+                
+                print(log_string)
 
                 if it % self.save_interval == 0:
                     self.save(os.path.join(self.log_dir, 'model_{}.pt'.format(it)))
@@ -489,7 +499,7 @@ class HyperOnPolicyRunner:
 
     def get_inference_policy(self, device=None):
         """Get policy for inference"""
-        self.alg.actor_critic.eval() # switch to evaluation mode (dropout for example)
+        self.alg.actor_critic.eval() # switch to evaluation mode
         if device is not None:
             self.alg.actor_critic.to(device)
         return self.alg.actor_critic.act_inference

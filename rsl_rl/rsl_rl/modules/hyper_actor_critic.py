@@ -107,7 +107,7 @@ class HyperActorWrapper(nn.Module):
                  device: str = "cuda",
                  multi_gpu: bool = False,
                  input_channels: int = 1,  # For depth images
-                 input_size: int = 64,     # 64x64 depth images
+                 input_size: int = 84,     # 84x84 depth images
                  use_teacher_distillation: bool = True,
                  teacher_update_freq: int = 100,
                  distillation_weight: float = 0.1,
@@ -123,7 +123,7 @@ class HyperActorWrapper(nn.Module):
             device: Device for computation
             multi_gpu: Whether to use multiple GPUs
             input_channels: Number of input channels (1 for depth)
-            input_size: Input image size (64 for 64x64 depth)
+            input_size: Input image size (84 for 84x84 depth)
             use_teacher_distillation: Whether to use teacher distillation
             teacher_update_freq: How often to update teacher network
             distillation_weight: Weight for distillation loss
@@ -132,12 +132,12 @@ class HyperActorWrapper(nn.Module):
             # Unexpected arguments will be ignored
             pass
         
-        super(HyperActor, self).__init__()
+        super(HyperActorWrapper, self).__init__()
         
         self.act_dim = act_dim
         self.obs_dim = obs_dim  # Total obs including depth
         self.base_obs_dim = 48  # Base proprioceptive observations
-        self.depth_obs_dim = obs_dim - self.base_obs_dim  # Depth observations (4096)
+        self.depth_obs_dim = obs_dim - self.base_obs_dim  # Depth observations (7056)
         self.architecture_config_path = architecture_config_path
         self.meta_batch_size = meta_batch_size
         self.multi_gpu = multi_gpu
@@ -178,13 +178,11 @@ class HyperActorWrapper(nn.Module):
         self.current_models = None
         self.list_of_sampled_shape_inds = []
         
-        # HyperActor initialized
     
     def _initialize_devices(self, device):
         """Initialize device configuration"""
         self.device = torch.device(device if torch.cuda.is_available() else 'cpu')
         self.multi_gpu = self.multi_gpu and torch.cuda.device_count() > 1
-        # Multi-GPU configuration set if available
     
     def _load_architecture_configs(self):
         """Load architecture configurations from JSON file"""
@@ -193,12 +191,10 @@ class HyperActorWrapper(nn.Module):
                 config_data = json.load(f)
             self.architecture_configs = config_data.get('architectures', [])
             self.metadata = config_data.get('metadata', {})
-            # Loaded architecture configurations from file
         else:
             # Default GO2 architectures for depth + proprioception
             self.architecture_configs = self._get_default_go2_architectures()
             self.metadata = self._get_default_metadata()
-            # Using default GO2 architectures
     
     def _get_default_go2_architectures(self):
         """Default architecture configurations for GO2 with depth camera"""
@@ -298,14 +294,12 @@ class HyperActorWrapper(nn.Module):
             self.list_of_arcs.append(arch_config['arch_descriptor'])
             self.list_of_arc_indices.append(i)
         
-        # CNN+MLP architectures created
     
     def _initialize_architecture_sampling_data(self):
         """Initialize architecture sampling probabilities and data"""
         # Use uniform sampling for simplicity
         self.arch_sampling_probs = np.ones(len(self.list_of_arc_indices)) / len(self.list_of_arc_indices)
         self.sampled_indices = None
-        # Using uniform sampling across architectures
     
     def _initialize_ghn(self):
         """Initialize the Graph HyperNetwork"""
@@ -321,7 +315,6 @@ class HyperActorWrapper(nn.Module):
             device=self.device
         ).to(self.device)
         
-        # GHN initialized
     
     def _initialize_std(self):
         """Initialize standard deviation parameters for each architecture"""
@@ -333,7 +326,6 @@ class HyperActorWrapper(nn.Module):
         else:
             self.log_std = nn.Parameter(torch.zeros(1, self.act_dim))
         
-        # Initialized std parameters for each architecture
     
     def _initialize_teacher_network(self):
         """Initialize teacher network for distillation"""
@@ -356,7 +348,6 @@ class HyperActorWrapper(nn.Module):
         # Teacher std parameters (separate from student)
         self.teacher_log_std = nn.Parameter(torch.zeros(1, self.act_dim), requires_grad=True)
         
-        # Teacher network initialized
     
     def change_graph(self, repeat_sample=False):
         """
@@ -397,7 +388,7 @@ class HyperActorWrapper(nn.Module):
         
         # STEP 2: Generate weights using GHN (happens every call)
         if self.list_of_sampled_shape_inds and self.current_models:
-            shape_inds_tensor = torch.cat(self.list_of_sampled_shape_inds).view(-1, 1)
+            shape_inds_tensor = torch.cat(self.list_of_sampled_shape_inds).reshape(-1, 1)
             
             # Generate weights for current models using GHN
             # This is the critical weight generation step
@@ -406,6 +397,12 @@ class HyperActorWrapper(nn.Module):
                 shape_ind=shape_inds_tensor,
                 return_embeddings=True
             )
+            
+            # CRITICAL: Ensure generated weights have requires_grad=False
+            # Only GHN and log_std parameters should be trainable
+            for model in self.current_models:
+                for param in model.parameters():
+                    param.requires_grad = False
     
     def sample_arc_indices(self):
         """Sample architecture indices for current meta-batch"""
@@ -429,7 +426,7 @@ class HyperActorWrapper(nn.Module):
                 arch_descriptor, 
                 dtype=torch.float32, 
                 device=self.device
-            ).view(-1, 1)
+            ).reshape(-1, 1)
             
             self.list_of_sampled_shape_inds.append(shape_descriptor)
     
@@ -452,10 +449,10 @@ class HyperActorWrapper(nn.Module):
         batch_size = observations.shape[0]
         
         # Extract depth images from observations
-        # observations = [base_obs(48) + depth_flat(4096)]
+        # observations = [base_obs(48) + depth_flat(7056)]
         base_obs = observations[:, :self.base_obs_dim]  # [batch_size, 48]
-        depth_flat = observations[:, self.base_obs_dim:]  # [batch_size, 4096]
-        depth_images = depth_flat.view(batch_size, 1, 64, 64)  # [batch_size, 1, 64, 64]
+        depth_flat = observations[:, self.base_obs_dim:]  # [batch_size, 7056]
+        depth_images = depth_flat.reshape(batch_size, 1, 84, 84)  # [batch_size, 1, 84, 84]
         
         # Forward through all sampled architectures
         all_outputs = []
@@ -499,8 +496,8 @@ class HyperActorWrapper(nn.Module):
         batch_size = observations.shape[0]
         
         # Extract depth images from observations (same as student)
-        depth_flat = observations[:, self.base_obs_dim:]  # [batch_size, 4096]
-        depth_images = depth_flat.view(batch_size, 1, 64, 64)  # [batch_size, 1, 64, 64]
+        depth_flat = observations[:, self.base_obs_dim:]  # [batch_size, 7056]
+        depth_images = depth_flat.reshape(batch_size, 1, 84, 84)  # [batch_size, 1, 84, 84]
         
         # Forward through teacher network
         teacher_output = self.teacher_network(depth_images)  # [batch_size, act_dim * 2]
@@ -555,7 +552,6 @@ class HyperActorWrapper(nn.Module):
             # Update teacher with the first model (could be improved with best performer selection)
             if self.current_models and len(self.current_models) > 0:
                 self.teacher_network.load_state_dict(self.current_models[0].state_dict())
-                # Teacher network updated
     
     def get_training_metrics(self):
         """Get GHN training metrics for logging (PPO style)"""
@@ -648,7 +644,7 @@ class CustomActorCritic(nn.Module):
             final_activation=None  # No activation on final layer
         )
         
-        # Custom Actor-Critic networks initialized
+        print(f"Custom Actor-Critic initialized: {num_actor_obs} -> {num_actions}")
         
         # Action noise parameter
         self.std = nn.Parameter(init_noise_std * torch.ones(num_actions))
@@ -731,6 +727,84 @@ class CustomActorCritic(nn.Module):
         return self.critic(critic_observations)
 
 
+class ArchConditionedCritic(nn.Module):
+    """Architecture-conditioned critic network matching hyperhelp pattern"""
+    
+    def __init__(self, state_dim, depth_dim, arch_descriptor_dim, device):
+        super().__init__()
+        self.device = device
+        self.state_dim = state_dim
+        self.depth_dim = depth_dim
+        
+        # Process depth observations with CNN (matching SimpleCNN structure)
+        depth_features_dim = 128
+        self.depth_encoder = nn.Sequential(
+            nn.Conv2d(1, 32, 4, stride=2, padding=1),  # 84x84 -> 42x42
+            nn.ReLU(),
+            nn.Conv2d(32, 64, 4, stride=2, padding=1), # 42x42 -> 21x21
+            nn.ReLU(),
+            nn.Conv2d(64, 128, 4, stride=2, padding=1), # 21x21 -> 11x11
+            nn.ReLU(),
+            nn.Conv2d(128, 256, 4, stride=2, padding=1), # 11x11 -> 6x6
+            nn.ReLU(),
+            nn.AdaptiveAvgPool2d((1, 1)),               # -> 1x1
+            nn.Flatten(),                               # -> 256
+            nn.Linear(256, depth_features_dim)          # -> 128
+        )
+        
+        # Process state information
+        state_features_dim = 128
+        self.state_encoder = nn.Sequential(
+            nn.Linear(state_dim, 256),
+            nn.ReLU(),
+            nn.Linear(256, state_features_dim)
+        )
+        
+        # Process architecture descriptor
+        arch_embedding_dim = 64
+        self.arch_embedding = nn.Sequential(
+            nn.Linear(arch_descriptor_dim, 32),
+            nn.ReLU(),
+            nn.Linear(32, arch_embedding_dim)
+        )
+        
+        # Combine all features: Depth + State + Architecture
+        combined_dim = depth_features_dim + state_features_dim + arch_embedding_dim  # 128 + 128 + 64 = 320
+        
+        self.critic = nn.Sequential(
+            nn.Linear(combined_dim, 512),
+            nn.ReLU(),
+            nn.Linear(512, 256),
+            nn.ReLU(),
+            nn.Linear(256, 1)
+        )
+        
+        print(f"Architecture-conditioned critic initialized:")
+        print(f"  State: {state_dim} -> {state_features_dim}")
+        print(f"  Depth: {depth_dim} -> {depth_features_dim}")
+        print(f"  Architecture: {arch_descriptor_dim} -> {arch_embedding_dim}")
+        print(f"  Combined: {combined_dim} -> 1")
+        
+    def forward(self, observations, arch_descriptors):
+        # Extract depth and state from observations
+        # observations should be [batch, 7104] = [batch, 48 + 7056]
+        batch_size = observations.shape[0]
+        state_obs = observations[:, :48]  # First 48 dimensions are state
+        depth_flat = observations[:, 48:]  # Remaining 7056 dimensions are depth
+        
+        # Reshape depth to [batch, 1, 84, 84]
+        depth_img = depth_flat.reshape(batch_size, 1, 84, 84)
+        
+        # Process all inputs separately
+        depth_features = self.depth_encoder(depth_img)  # [batch, 128]
+        state_features = self.state_encoder(state_obs)   # [batch, 128] 
+        arch_embedding = self.arch_embedding(arch_descriptors)  # [batch, 64]
+        
+        # Combine all privileged information
+        combined = torch.cat([depth_features, state_features, arch_embedding], dim=1)  # [batch, 320]
+        return self.critic(combined).squeeze(-1)
+
+
 class HyperPPOActorCritic(nn.Module):
     """
     Complete HyperPPO Actor-Critic implementation for GO2 robot
@@ -781,33 +855,35 @@ class HyperPPOActorCritic(nn.Module):
         self.device = torch.device(device if torch.cuda.is_available() else 'cpu')
         self.distillation_weight = distillation_weight
         
-        # Initialize hyperActor from existing HyperPPO implementation
-        self.hyper_actor = hyperActor(
+        # Use minimal wrapper that doesn't interfere with working hyperActor
+        from .minimal_hyper_wrapper import MinimalHyperWrapper
+        self.hyper_actor = MinimalHyperWrapper(
             act_dim=num_actions,
             obs_dim=num_actor_obs,
             architecture_config_path=architecture_config_path,
             meta_batch_size=meta_batch_size,
-            device=device,
-            multi_gpu=False,
-            architecture_sampling_mode="uniform"
+            device=device
         )
         
         # Architecture-conditioned critic with depth + state + architecture inputs
         # Get architecture descriptor dimension from hyper_actor
         arch_descriptor_dim = 16  # Fixed descriptor length from generate_architectures.py
-        privileged_state_dim = 48  # Privileged observations (no depth)
+        state_dim = 48  # First 48 dimensions are state
+        depth_dim = 84 * 84  # Remaining 7056 dimensions are depth
         
         self.critic = ArchConditionedCritic(
-            state_dim=privileged_state_dim,
+            state_dim=state_dim,
+            depth_dim=depth_dim,
             arch_descriptor_dim=arch_descriptor_dim,
-            device=self.device,
-            input_size=84  # Depth image size
+            device=self.device
         )
         
         self.distribution = None
         Normal.set_default_validate_args = False
         
-        # HyperPPO Actor-Critic initialized
+        # Initialize architectures for first use 
+        print(f"HyperPPO Actor-Critic initialized with {num_actions} actions")
+        # Note: hyperActor already initializes architectures in its constructor via _initialize_current_architectures()
     
     def _preprocess_depth(self, observations):
         """
@@ -827,7 +903,7 @@ class HyperPPOActorCritic(nn.Module):
         depth_flat = observations[:, 48:]  # [batch, 7056]
         
         # Reshape depth to image format [batch, 1, 84, 84]
-        depth_images = depth_flat.view(batch_size, 1, 84, 84)
+        depth_images = depth_flat.reshape(batch_size, 1, 84, 84)
         
         return {
             'depth': depth_images,  # [batch, 1, 84, 84]
@@ -884,15 +960,25 @@ class HyperPPOActorCritic(nn.Module):
         """Update action distribution using HyperActor"""
         mu, log_std = self.hyper_actor(observations)
         std = torch.exp(log_std)
+        
+        # Ensure tensors are contiguous before Normal distribution creation
+        mu = mu.contiguous()
+        std = std.contiguous()
+        
+        # Create distribution directly
         self.distribution = Normal(mu, std)
     
     def act(self, observations, **kwargs):
-        """Sample action from policy distribution"""
-        # Extract arch_descriptors from kwargs if provided (for minibatch training)
+        """Sample action from policy distribution with weight regeneration"""
+        # Weight regeneration is handled by regenerate_weights() method when needed
+        # Don't regenerate here as it can cause issues with minibatch processing
+        
+        # Extract arch_descriptors from kwargs if provided 
         arch_descriptors = kwargs.get('arch_descriptors', None)
         if arch_descriptors is not None:
             # Store for tracking during minibatch updates
             self.current_arch_descriptors = arch_descriptors
+        
         self.update_distribution(observations)
         return self.distribution.sample()
     
@@ -907,22 +993,31 @@ class HyperPPOActorCritic(nn.Module):
     
     def evaluate(self, critic_observations, **kwargs):
         """Evaluate value function using architecture-conditioned critic"""
-        # Extract arch_descriptors from kwargs if provided (for minibatch training)
-        arch_descriptors = kwargs.get('arch_descriptors', None)
-        if arch_descriptors is None:
-            # Get current architecture descriptors as fallback
-            arch_descriptors = self.get_current_arch_descriptors()
+        # CRITICAL: Architecture-conditioned critic gets current architecture descriptors
+        # This matches the hyperhelp pattern: critic uses RGB + State + Architecture
+        arch_descriptors = self.get_current_arch_descriptors()
         
-        # Expand arch descriptors to match batch size
+        # Replicate arch descriptors to match batch size
         batch_size = critic_observations.shape[0]
-        if arch_descriptors.shape[0] == 1 and batch_size > 1:
-            arch_descriptors = arch_descriptors.expand(batch_size, -1)
+        if arch_descriptors.shape[0] != batch_size:
+            # For HyperPPO: we have meta_batch_size=2 architectures, but batch_size=128 environments
+            # We need to repeat each architecture descriptor for the environments that use it
+            if arch_descriptors.shape[0] == 1:
+                # Single architecture: expand to all environments
+                arch_descriptors = arch_descriptors.expand(batch_size, -1)
+            else:
+                # Multiple architectures: repeat each one to fill the batch
+                # Repeat each architecture for batch_size // meta_batch_size environments
+                envs_per_arch = batch_size // arch_descriptors.shape[0]
+                arch_descriptors = arch_descriptors.repeat_interleave(envs_per_arch, dim=0)
+                # Handle any remaining environments
+                if arch_descriptors.shape[0] < batch_size:
+                    remaining = batch_size - arch_descriptors.shape[0]
+                    extra = arch_descriptors[:remaining]
+                    arch_descriptors = torch.cat([arch_descriptors, extra], dim=0)
         
-        # Prepare observations dict for critic
-        obs_dict = self._prepare_critic_obs(critic_observations)
-        
-        # Use architecture-conditioned critic
-        return self.critic(obs_dict, arch_descriptors)
+        # Use architecture-conditioned critic 
+        return self.critic(critic_observations, arch_descriptors)
     
     def resample_architectures(self):
         """Resample architectures for new epoch (call AFTER epoch completes)"""
@@ -937,12 +1032,21 @@ class HyperPPOActorCritic(nn.Module):
         return self.hyper_actor.get_training_metrics()
     
     def get_current_arch_descriptors(self):
-        """Get current architecture descriptors for tracking"""
-        if hasattr(self, 'current_arch_descriptors') and self.current_arch_descriptors is not None:
-            return self.current_arch_descriptors.clone().detach()
-        # Try to get from hyper_actor if available
+        """Get current architecture descriptors for tracking (hyperhelp pattern)"""
+        # Return the full arch_descriptors_per_state to match batch size
+        if hasattr(self.hyper_actor, 'arch_descriptors_per_state') and self.hyper_actor.arch_descriptors_per_state is not None:
+            return self.hyper_actor.arch_descriptors_per_state.clone().detach()
+        
+        # Fallback: use current descriptors 
         if hasattr(self.hyper_actor, 'current_arch_descriptors') and self.hyper_actor.current_arch_descriptors is not None:
             return self.hyper_actor.current_arch_descriptors.clone().detach()
+        
+        # Try to construct from sampled indices
+        if hasattr(self.hyper_actor, 'sampled_indices') and self.hyper_actor.sampled_indices is not None:
+            if hasattr(self.hyper_actor, 'arch_descriptors'):
+                idx = self.hyper_actor.sampled_indices[0]  # Use first sampled architecture
+                return self.hyper_actor.arch_descriptors[idx:idx+1].clone().detach()
+        
         # Fallback: return zero descriptors if no architecture is set
         return torch.zeros(1, 16, device=self.device)
     
@@ -996,7 +1100,7 @@ class CustomVisualActorCritic(nn.Module):
                  num_actor_obs,
                  num_critic_obs,
                  num_actions,
-                 depth_image_shape=(64, 64),
+                 depth_image_shape=(84, 84),
                  depth_latent_dim=32,
                  actor_hidden_dims=[512, 256, 128],
                  critic_hidden_dims=[512, 256, 128],
@@ -1057,7 +1161,7 @@ class CustomVisualActorCritic(nn.Module):
             activation_fn=activation_fn
         )
         
-        # Custom Visual Actor-Critic with depth encoder initialized
+        print(f"Custom Visual Actor-Critic initialized with depth encoder")
         
         # Action noise
         self.std = nn.Parameter(init_noise_std * torch.ones(num_actions))
@@ -1071,17 +1175,17 @@ class CustomVisualActorCritic(nn.Module):
         # Simple CNN for depth processing
         encoder = nn.Sequential(
             # First conv block
-            nn.Conv2d(1, 32, kernel_size=8, stride=4, padding=0),  # 64x64 -> 15x15
+            nn.Conv2d(1, 32, kernel_size=8, stride=4, padding=0),  # 84x84 -> 20x20
             activation_fn,
             # Second conv block
-            nn.Conv2d(32, 64, kernel_size=4, stride=2, padding=0),  # 15x15 -> 6x6
+            nn.Conv2d(32, 64, kernel_size=4, stride=2, padding=0),  # 20x20 -> 9x9
             activation_fn,
             # Third conv block
-            nn.Conv2d(64, 64, kernel_size=3, stride=1, padding=0),  # 6x6 -> 4x4
+            nn.Conv2d(64, 64, kernel_size=3, stride=1, padding=0),  # 9x9 -> 7x7
             activation_fn,
             # Flatten and FC
             nn.Flatten(),
-            nn.Linear(64 * 4 * 4, 128),
+            nn.Linear(64 * 7 * 7, 128),
             activation_fn,
             nn.Linear(128, latent_dim)
         )
@@ -1117,8 +1221,8 @@ class CustomVisualActorCritic(nn.Module):
     def _extract_depth_from_obs(self, observations):
         """Extract base obs and depth from observations"""
         base_obs = observations[:, :self.base_actor_obs_size]  # [B, 48]
-        depth_flat = observations[:, self.base_actor_obs_size:]  # [B, 4096]
-        depth_images = depth_flat.view(-1, 1, 64, 64)  # [B, 1, 64, 64] for CNN
+        depth_flat = observations[:, self.base_actor_obs_size:]  # [B, 7056]
+        depth_images = depth_flat.reshape(-1, 1, 84, 84)  # [B, 1, 84, 84] for CNN
         return base_obs, depth_images
     
     def _encode_depth(self, depth_images):

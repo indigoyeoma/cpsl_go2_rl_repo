@@ -74,8 +74,8 @@ class GO2DepthCfgPPO(LeggedRobotCfgPPO):
     class algorithm(LeggedRobotCfgPPO.algorithm):
         entropy_coef = 0.01
         # Fixed learning rate for stability  
-        # schedule = 'fixed'
-        # learning_rate = 5e-4
+        schedule = 'fixed'
+        learning_rate = 7e-4
         
         # num_mini_batches = 3
         # num_learning_epochs = 8

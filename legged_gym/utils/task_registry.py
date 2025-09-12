@@ -117,8 +117,16 @@ class TaskRegistry():
         
         train_cfg_dict = class_to_dict(train_cfg)
         
-        # Use standard OnPolicyRunner for normal visual RL
-        runner = OnPolicyRunner(env, train_cfg_dict, log_dir, device=args.rl_device)
+        # Use HyperOnPolicyRunner for HyperPPO, standard OnPolicyRunner for others
+        algorithm_class_name = train_cfg_dict['runner']['algorithm_class_name']
+        print(f"DEBUG: algorithm_class_name = {algorithm_class_name}")
+        
+        if algorithm_class_name == 'HyperPPO':
+            print("Using HyperOnPolicyRunner for HyperPPO")
+            runner = HyperOnPolicyRunner(env, train_cfg_dict, log_dir, device=args.rl_device)
+        else:
+            print("Using standard OnPolicyRunner")
+            runner = OnPolicyRunner(env, train_cfg_dict, log_dir, device=args.rl_device)
         #save resume path before creating a new log_dir
         resume = train_cfg.runner.resume
         if resume:

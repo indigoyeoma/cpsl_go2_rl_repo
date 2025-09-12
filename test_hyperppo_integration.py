@@ -8,8 +8,9 @@ Tests the hyperActor initialization and architecture loading
 
 import sys
 import os
-sys.path.append('/home/jiwoo/ws/go2_rl_jw')
-sys.path.append('/home/jiwoo/ws/go2_rl_jw/rsl_rl')
+# Updated paths for current environment
+sys.path.append('/home/nvidiasims/jw_ws/cpsl_go2_rl_repo')
+sys.path.append('/home/nvidiasims/jw_ws/cpsl_go2_rl_repo/rsl_rl')
 
 import torch
 import json
@@ -19,7 +20,7 @@ def test_hyperppo_integration():
     
     try:
         # Test 1: Load architecture configurations
-        config_path = "/home/jiwoo/ws/go2_rl_jw/rsl_rl/rsl_rl/hyperppo/configs/architecture_go2_depth64_corrected.json"
+        config_path = "/home/nvidiasims/jw_ws/cpsl_go2_rl_repo/rsl_rl/rsl_rl/hyperppo/configs/architecture_go2_depth84.json"
         print("Loading architecture config from: " + config_path)
         
         with open(config_path, 'r') as f:
@@ -67,7 +68,7 @@ def test_hyperppo_integration():
         try:
             hyper_actor = hyperActor(
                 act_dim=12,  # GO2 action dimension
-                obs_dim=48,  # GO2 state observation dimension  
+                obs_dim=7104,  # 48 state + 7056 depth (84x84) 
                 architecture_config_path=config_path,
                 meta_batch_size=4,
                 device=device,
@@ -102,8 +103,8 @@ def test_hyperppo_integration():
         
         try:
             batch_size = 8  # Small test batch
-            # Depth image: 1 channel, 64x64
-            dummy_depth = torch.randn(batch_size, 1, 64, 64).to(device)
+            # Depth image: 1 channel, 84x84  
+            dummy_depth = torch.randn(batch_size, 1, 84, 84).to(device)
             # State observations: 48 dimensional 
             dummy_state = torch.randn(batch_size, 48).to(device)
             

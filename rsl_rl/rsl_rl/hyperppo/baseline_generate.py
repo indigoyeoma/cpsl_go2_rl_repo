@@ -300,13 +300,13 @@ if __name__ == "__main__":
     parser.add_argument("--input_size", type=int, default=84, help="Input image size (width/height)")
     parser.add_argument("--output_dim", type=int, default=12, help="Final output dimension (action space)")
     parser.add_argument("--state_dim", type=int, default=48, help="State vector dimension")
-    parser.add_argument("--cnn_output_dim", type=int, default=256, help="CNN branch output dimension")
-    parser.add_argument("--state_mlp_dim", type=int, default=256, help="State MLP branch output dimension")
+    parser.add_argument("--cnn_output_dim", type=int, default=128, help="CNN branch output dimension")
+    parser.add_argument("--state_mlp_dim", type=int, default=128, help="State MLP branch output dimension")
     parser.add_argument("--cnn_layer_options", type=int, nargs="+", default=[4], help="CNN layer count - optimal 4 layers")
     parser.add_argument("--mlp_layer_options", type=int, nargs="+", default=[2], help="MLP layer count - optimal 2 layers")
     parser.add_argument("--cnn_channel_options", type=int, nargs="+", default=[32,64,128,256], help="CNN channel progression - optimal 4-layer sequence")
     parser.add_argument("--cnn_kernel_options", type=int, nargs="+", default=[3], help="CNN kernel size - 3x3 for all layers")
-    parser.add_argument("--mlp_dim_options", type=int, nargs="+", default=[512,256], help="MLP dimensions - optimal fixed sequence")
+    parser.add_argument("--mlp_dim_options", type=int, nargs="+", default=[256,512], help="MLP dimensions - optimal fixed sequence")
     
     args = parser.parse_args()
     

@@ -29,57 +29,6 @@
 # Copyright (c) 2021 ETH Zurich, Nikita Rudin
 # HyperPPO extension for Graph HyperNetworks
 
-"""
-KL Divergence Fix for Continuous Actions with Tanh Squashing
-
-The KL divergence fix required addressing a mathematical inconsistency in how log probabilities were computed for
-continuous actions with tanh squashing.
-
-What Was Required:
-
-1. Understanding the Problem
-   - PPO requires: ratio = exp(newlogprob - oldlogprob)
-   - Our bug: oldlogprob (rollout) and newlogprob (training) used different formulas
-   - Result: Artificial KL divergence of ~3.0 instead of ~0
-
-2. The Mathematical Issue
-   Tanh-squashed continuous actions require a Jacobian correction because:
-   - Raw action u ~ Normal(μ, σ)
-   - Final action a = tanh(u)
-   - Correct log_prob: log π(a) = log π(u) - log|da/du|
-   - Jacobian term: log|da/du| = log(1 - tanh²(u)) = log(1 - a²)
-
-3. The Inconsistency
-   Rollout (sampling mode):
-   raw_action = dist.sample()
-   action = torch.tanh(raw_action)
-   log_prob = dist.log_prob(raw_action).sum(1) - torch.log(1 - action.pow(2) + 1e-6).sum(1)
-   ✅ Mathematically correct with Jacobian correction
-
-   Training (evaluation mode):
-   log_prob = dist.log_prob(action).sum(1)  # Direct on tanh-squashed actions
-   ❌ Mathematically wrong - missing Jacobian correction
-
-4. The Fix Required
-   Make both phases use the same correct formula:
-   # Convert tanh action back to raw action space
-   raw_action = torch.atanh(torch.clamp(action, -0.999, 0.999))
-   # Apply correct log probability with Jacobian
-   log_prob = dist.log_prob(raw_action).sum(1) - torch.log(1 - action.pow(2) + 1e-6).sum(1)
-
-5. Why This Fix Worked
-   - Before: Comparing apples (correct log_prob) vs oranges (incorrect log_prob) → High KL
-   - After: Comparing apples vs apples (both correct) → Normal KL ≈ 0
-
-6. Key Requirements for the Solution
-   1. Mathematical consistency: Same formula for both rollout and training
-   2. Numerical stability: Clamping action to avoid atanh overflow
-   3. Jacobian correction: Including the log(1 - a²) term for tanh squashing
-   4. Proper inverse: Using torch.atanh() to convert back to raw action space
-
-The fix was essentially ensuring that PPO compares like with like - both old and new log probabilities computed using the
-same mathematically sound approach for continuous tanh-squashed actions.
-"""
 
 import torch
 import torch.nn as nn
@@ -88,6 +37,7 @@ import torch.optim as optim
 from rsl_rl.modules import ActorCritic
 from rsl_rl.modules.hyper_actor_critic import HyperPPOActorCritic
 from rsl_rl.storage import RolloutStorage
+from rsl_rl.storage.hyper_rollout_storage import HyperRolloutStorage
 import wandb
 
 class HyperPPO:
@@ -139,8 +89,15 @@ class HyperPPO:
         self.actor_critic = actor_critic
         self.actor_critic.to(self.device)
         self.storage = None # initialized later
-        self.optimizer = optim.Adam(self.actor_critic.parameters(), lr=learning_rate)
-        self.transition = RolloutStorage.Transition()
+        # Only optimize GHN parameters and log_std parameters, NOT generated CNN/MLP weights
+        ghn_params = list(self.actor_critic.hyper_actor.ghn.parameters())  # GHN parameters
+        std_params = list(self.actor_critic.hyper_actor.log_std.parameters())  # log_std parameters  
+        critic_params = list(self.actor_critic.critic.parameters())  # Critic parameters
+        
+        # Combine only the learnable parameters (GHN + log_std + critic)
+        trainable_params = ghn_params + std_params + critic_params
+        self.optimizer = optim.Adam(trainable_params, lr=learning_rate)
+        self.transition = HyperRolloutStorage.Transition()
 
         # PPO parameters
         self.clip_param = clip_param
@@ -156,17 +113,18 @@ class HyperPPO:
         # Track training iteration for GHN monitoring
         self.training_iteration = 0
 
-        print(f"🚀 HyperPPO initialized with hyper_enabled={hyper_enabled}")
+        print(f"HyperPPO initialized with hyper_enabled={hyper_enabled}")
         if self.hyper_enabled:
-            print(f"🔧 GHN ratio clamping: [{ratio_clamp_min}, {ratio_clamp_max}]")
+            print(f"GHN ratio clamping: [{ratio_clamp_min}, {ratio_clamp_max}]")
 
     def init_storage(self, num_envs, num_transitions_per_env, actor_obs_shape, critic_obs_shape, action_shape):
-        self.storage = RolloutStorage(num_envs, num_transitions_per_env, actor_obs_shape, critic_obs_shape, action_shape, self.device)
+        # Get meta_batch_size from actor_critic if available
+        meta_batch_size = getattr(self.actor_critic.hyper_actor, 'meta_batch_size', 2) if hasattr(self.actor_critic, 'hyper_actor') else 2
+        self.storage = HyperRolloutStorage(num_envs, num_transitions_per_env, actor_obs_shape, critic_obs_shape, action_shape, 
+                                         meta_batch_size=meta_batch_size, device=self.device)
         
-        # CRITICAL: Initialize architectures for first rollout
-        if self.hyper_enabled and hasattr(self.actor_critic, 'resample_architectures'):
-            print("🎯 Initializing architectures for first rollout...")
-            self.actor_critic.resample_architectures()
+        # Note: Architectures are already initialized in HyperPPOActorCritic constructor
+        # No need to resample here as they're ready for the first rollout
 
     def test_mode(self):
         self.actor_critic.test()
@@ -181,18 +139,19 @@ class HyperPPO:
         if self.actor_critic.is_recurrent:
             self.transition.hidden_states = self.actor_critic.get_hidden_states()
         
-        # Get current architecture descriptors for tracking
-        arch_descriptors = None
-        if self.hyper_enabled and hasattr(self.actor_critic, 'get_current_arch_descriptors'):
-            arch_descriptors = self.actor_critic.get_current_arch_descriptors()
-            
-        # Compute the actions and values - depth now included in observations
-        self.transition.actions = self.actor_critic.act(obs, arch_descriptors=arch_descriptors).detach()
-        self.transition.values = self.actor_critic.evaluate(critic_obs, arch_descriptors=arch_descriptors).detach()
+        # Compute the actions and values - depth now included in observations (this creates arch_descriptors_per_state)
+        self.transition.actions = self.actor_critic.act(obs, arch_descriptors=None).detach()
+        self.transition.values = self.actor_critic.evaluate(critic_obs, arch_descriptors=None).detach()
         self.transition.actions_log_prob = self.actor_critic.get_actions_log_prob(self.transition.actions).detach()
         self.transition.action_mean = self.actor_critic.action_mean.detach()
         self.transition.action_sigma = self.actor_critic.action_std.detach()
-        # HyperPPO: Store architecture descriptors with transition
+        
+        # Get current architecture descriptors AFTER forward pass
+        arch_descriptors = None
+        if self.hyper_enabled and hasattr(self.actor_critic, 'get_current_arch_descriptors'):
+            arch_descriptors = self.actor_critic.get_current_arch_descriptors()
+        
+        # HyperPPO: Store architecture descriptors with transition (keep original meta-batch format)
         self.transition.arch_descriptors = arch_descriptors
         # need to record obs and critic_obs before env.step()
         self.transition.observations = obs
@@ -204,7 +163,7 @@ class HyperPPO:
         self.transition.dones = dones
         # Bootstrapping on time outs
         if 'time_outs' in infos:
-            self.transition.rewards += self.gamma * torch.squeeze(self.transition.values * infos['time_outs'].unsqueeze(1).to(self.device), 1)
+            self.transition.rewards += self.gamma * (self.transition.values * infos['time_outs'].to(self.device))
 
         # Record the transition
         self.storage.add_transitions(self.transition)
@@ -212,7 +171,11 @@ class HyperPPO:
         self.actor_critic.reset(dones)
     
     def compute_returns(self, last_critic_obs):
-        last_values= self.actor_critic.evaluate(last_critic_obs).detach()
+        # Get current architecture descriptors for final value computation
+        arch_descriptors = None
+        if self.hyper_enabled and hasattr(self.actor_critic, 'get_current_arch_descriptors'):
+            arch_descriptors = self.actor_critic.get_current_arch_descriptors()
+        last_values = self.actor_critic.evaluate(last_critic_obs, arch_descriptors=arch_descriptors).detach()
         self.storage.compute_returns(last_values, self.gamma, self.lam)
 
     def update(self):
@@ -234,15 +197,13 @@ class HyperPPO:
         # Optional: Monitor GHN training progress at start of training
         if self.hyper_enabled and self.training_iteration % 50 == 0:
             if hasattr(self.actor_critic, 'monitor_training'):
-                print(f"🧠 [Iteration {self.training_iteration}] GHN Training Progress Monitor")
                 self.actor_critic.monitor_training()
         
         # HyperPPO Training: Detailed per-epoch, per-minibatch structure
         total_weight_regenerations = 0
         
-        # FOR EACH EPOCH (e.g., 3 epochs)
+        # FOR EACH EPOCH
         for epoch in range(self.num_learning_epochs):
-            print(f"🏋️ [Iteration {self.training_iteration}] Starting Epoch {epoch + 1}/{self.num_learning_epochs}")
             
             # Get minibatch generator for this epoch
             if self.actor_critic.is_recurrent:
@@ -251,23 +212,22 @@ class HyperPPO:
                 minibatch_generator = self.storage.mini_batch_generator(self.num_mini_batches, 1)  # 1 epoch at a time
             
             minibatch_in_epoch = 0
-            # FOR EACH MINIBATCH IN THIS EPOCH (e.g., 16 minibatches)  
+            # FOR EACH MINIBATCH IN THIS EPOCH 
             for obs_batch, critic_obs_batch, actions_batch, target_values_batch, advantages_batch, returns_batch, old_actions_log_prob_batch, \
-                old_mu_batch, old_sigma_batch, hid_states_batch, arch_descriptors_batch in minibatch_generator:
+                old_mu_batch, old_sigma_batch, hid_states_batch, masks_batch, arch_descriptors_batch in minibatch_generator:
 
                 minibatch_in_epoch += 1
                 total_weight_regenerations += 1
                 
-                # CRITICAL HYPERPPO STEP 2: Generate fresh weights W_mb_X for SAME architectures
-                # This is the KEY to GHN meta-learning - same architectures, fresh weights each minibatch
+                # CRITICAL HYPERPPO: Weight regeneration for same architectures with fresh weights
+                # This happens once per minibatch to ensure GHN training signal
                 if self.hyper_enabled and hasattr(self.actor_critic, 'regenerate_weights'):
-                    print(f"⚡ [E{epoch+1}/MB{minibatch_in_epoch}] Regenerating weights #{total_weight_regenerations}")
-                    self.actor_critic.regenerate_weights()  # calls change_graph(repeat_sample=True)
+                    self.actor_critic.regenerate_weights()
                 
-                # Standard PPO forward pass with fresh weights
-                self.actor_critic.act(obs_batch, masks=masks_batch, hidden_states=hid_states_batch[0], arch_descriptors=arch_descriptors_batch)
+                # Standard PPO forward pass with architecture descriptors
+                self.actor_critic.act(obs_batch, arch_descriptors=arch_descriptors_batch)
                 actions_log_prob_batch = self.actor_critic.get_actions_log_prob(actions_batch)
-                value_batch = self.actor_critic.evaluate(critic_obs_batch, masks=masks_batch, hidden_states=hid_states_batch[1], arch_descriptors=arch_descriptors_batch)
+                value_batch = self.actor_critic.evaluate(critic_obs_batch, arch_descriptors=arch_descriptors_batch)
                 mu_batch = self.actor_critic.action_mean
                 sigma_batch = self.actor_critic.action_std
                 entropy_batch = self.actor_critic.entropy
@@ -322,18 +282,13 @@ class HyperPPO:
                 mean_surrogate_loss += surrogate_loss.item()
                 mean_entropy += entropy_batch.mean().item()
             
-            print(f"✅ [Iteration {self.training_iteration}] Epoch {epoch + 1} complete - {minibatch_in_epoch} minibatches processed")
+            # Epoch complete
         
-        # Training summary
+        # Training summary for analysis
         total_minibatches = self.num_learning_epochs * self.num_mini_batches
-        print(f"🎯 [Iteration {self.training_iteration}] Training complete:")
-        print(f"   📊 Total minibatches: {total_minibatches}")
-        print(f"   ⚡ Weight regenerations: {total_weight_regenerations}")
-        print(f"   🔄 Regenerations per architecture: {total_weight_regenerations} times")
 
         # CRITICAL HYPERPPO STEP 3: Resample architectures for NEXT rollout iteration
         if self.hyper_enabled and hasattr(self.actor_critic, 'resample_architectures'):
-            print(f"🔄 [Iteration {self.training_iteration}] Training complete. Resampling architectures for next rollout...")
             self.actor_critic.resample_architectures()  # calls change_graph(repeat_sample=False)
 
         # Calculate averages across all minibatches
@@ -345,13 +300,6 @@ class HyperPPO:
         self.training_iteration += 1
         
         # HyperPPO specific logging with detailed weight regeneration info
-        if self.hyper_enabled:
-            print(f"🧠 [Iteration {self.training_iteration}] GHN Training Summary:")
-            print(f"   📊 Mean Surrogate Loss: {mean_surrogate_loss:.6f}")
-            print(f"   📈 Mean Value Loss: {mean_value_loss:.6f}") 
-            print(f"   🎲 Mean Entropy: {mean_entropy:.6f}")
-            print(f"   🔧 Learning Rate: {self.learning_rate:.2e}")
-            print(f"   ⚡ Total Weight Regenerations: {total_weight_regenerations}")
-            print(f"   🏗️ Expected (epochs × minibatches): {self.num_learning_epochs} × {self.num_mini_batches} = {total_minibatches}")
+        # Optional logging can be added here if needed
 
         return mean_value_loss, mean_surrogate_loss, mean_entropy

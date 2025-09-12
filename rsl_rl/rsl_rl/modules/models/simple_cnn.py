@@ -111,9 +111,9 @@ class SimpleCNN(nn.Module):
         
         # Print architecture for 84x84 depth input verification
         if not self.is_blind:
-            print(f"📊 4-Layer CNN initialized for input size: {cnn_dims}")
-            print(f"   Layer progression: 84×84 → 42×42 → 21×21 → 11×11 → 6×6")
-            print(f"   Channel progression: 1 → 32 → 64 → 128 → 256")
+            print(f"4-Layer CNN initialized for input size: {cnn_dims}")
+            print(f"   Layer progression: 84x84 -> 42x42 -> 21x21 -> 11x11 -> 6x6")
+            print(f"   Channel progression: 1 -> 32 -> 64 -> 128 -> 256")
             print(f"   Final CNN features: {int(256 * cnn_dims[0] * cnn_dims[1])}")
             print(f"   Output embedding size: {output_size}")
 

@@ -3,19 +3,17 @@ import torch.nn as nn
 import torch.nn.functional as F
 import time
 
-from .utils import capacity, default_device
+from rsl_rl.hyperppo.src.utils import capacity, default_device
 
 import numpy as np
 import copy
 
-# Define normalization layers for compatibility
 NormLayers = (nn.BatchNorm1d, nn.BatchNorm2d, nn.LayerNorm, nn.GroupNorm)
 
 def get_cell_ind(module_name, layers):
     """Simple cell index getter for sequential CNN+MLP networks"""
     return 0  # All layers in cell 0 for simple sequential networks
 
-# Placeholder for positional encoding (not used in our CNN+MLP case)
 class PosEnc(nn.Module):
     def __init__(self):
         super().__init__()
@@ -45,7 +43,7 @@ def get_activation(activation):
 
 
 def named_layered_modules(model):
-    if hasattr(model, 'module'):  # in case of multigpu model
+    if hasattr(model, 'module'):  
         model = model.module
     layers = model._n_cells if hasattr(model, '_n_cells') else 1
     layered_modules = [[] for _ in range(layers)]
@@ -97,12 +95,6 @@ class MLP_GHN(nn.Module):
         if layernorm:
             self.ln = nn.LayerNorm(hid)
 
-        # self.embed = torch.nn.Embedding(3, hid)  # Not used in simplified CNN+MLP approach
-
-        # Shape encoder: encode actual shape dimensions for proper weight generation
-        # For Conv: encode (out_ch, in_ch, k_h, k_w) 
-        # For MLP: encode (out_dim, in_dim, 1, 1)
-        # For Bias: encode (dim, 1, 1, 1)
         self.shape_enc3 = nn.Linear(4, hid).to(device)  # 4D shape encoding
         if hypernet == 'gatedgnn':
             self.gnn = GatedGNN(in_features=hid, ve=False)
@@ -111,9 +103,6 @@ class MLP_GHN(nn.Module):
         else:
             raise NotImplementedError(hypernet)
 
-        # SINGLE CONVDECODER APPROACH - Optimized for your uniform CNN+MLP architectures
-        # Your config shows: 96-channel CNNs (3x3 kernels) + 256-neuron MLPs
-        # Use config's ghn_max_shape: [256,256,3,3] - perfect for both!
         if decoder == 'conv':
             fn_dec, layers = ConvDecoder, (hid * 4, hid * 8)
         elif decoder == 'mlp':
@@ -140,15 +129,6 @@ class MLP_GHN(nn.Module):
 
         self.default_node_feat = torch.zeros(50).long().to(device)
         self.default_node_feat = nn.Parameter(self.default_node_feat, requires_grad=False)
-        
-        # Print single ConvDecoder configuration optimized for your uniform architectures
-        print(f"✅ MLP_GHN initialized with SINGLE CONVDECODER (optimized for uniform CNN+MLP):")
-        print(f"  - Main Decoder ({decoder}): max_shape={max_shape}, params={sum(p.numel() for p in self.decoder.parameters()):,}")
-        print(f"  - 1D Decoder (biases): max_ch={max_ch}, params={sum(p.numel() for p in self.decoder_1d.parameters()):,}")
-        print(f"  - Total GHN params: {sum(p.numel() for p in self.parameters()):,}")
-        print(f"  - Architecture match: Perfect for 96-channel CNNs (3x3) + 256-neuron MLPs")
-        print(f"  - Efficiency: CNN ~37% (96×96×3×3 / 256×256×3×3), MLP ~28% (256×256×1×1 / 256×256×3×3)")
-
 
 
 
@@ -182,14 +162,13 @@ class MLP_GHN(nn.Module):
         mapping, params_map = self._map_net_params(nets_torch, self.debug_level > 0)
         total_mapped_params = len(params_map)
         
-        # Create shape encodings for each parameter based on actual shapes
-        # Build shape tensor encoding actual parameter dimensions
         device = self.shape_enc3.weight.device  # Get device from model parameters
         shape_tensors = []
+        
+        
         for idx in sorted(params_map.keys()):
             matched, key, w_ind = params_map[idx]
             if matched is None or 'sz' not in matched:
-                # Default shape for unmapped parameters
                 shape_tensors.append(torch.tensor([1.0, 1.0, 1.0, 1.0], device=device))
             else:
                 sz = matched['sz']
@@ -204,60 +183,46 @@ class MLP_GHN(nn.Module):
         
         if shape_tensors:
             shape_tensor = torch.stack(shape_tensors)
-            # Normalize shape values with log scaling for better gradient flow
             shape_tensor = torch.log(shape_tensor + 1.0) / 10.0  # Log scale and normalize
             x_before_gnn = self.shape_enc3(shape_tensor)
         else:
-            # Fallback if no parameters
             x_before_gnn = torch.zeros(1, self.shape_enc3.out_features, device=device)
-            
-        # Debug: verify sizes match
         if self.debug_level > 0:
             print(f"Debug: x_before_gnn.shape={x_before_gnn.shape}, total_mapped_params={total_mapped_params}")
             print(f"Debug: mapping keys count = {sum(len(inds) for inds in mapping.values())}")
 
-        # Use simplified GNN processing (HyperPPO style)
-        # Create simple sequential graphs for each parameter
         batch_size = x_before_gnn.shape[0]
         
         # Create simple edges for sequential processing (self-loops)
         edges = torch.zeros((batch_size, 4), device=x_before_gnn.device, dtype=torch.long)
-        edges[:, 0] = torch.arange(batch_size)  # source nodes
-        edges[:, 1] = torch.arange(batch_size)  # target nodes (self-loops)
-        edges[:, 2] = 0  # distance (0 for self-loops)
-        edges[:, 3] = 0  # all nodes belong to graph 0
+        edges[:, 0] = torch.arange(batch_size)  
+        edges[:, 1] = torch.arange(batch_size)  
+        edges[:, 2] = 0  
+        edges[:, 3] = 0  
         
-        # Node graph indices (all nodes in same graph for simplicity)
         node_graph_ind = torch.zeros(batch_size, device=x_before_gnn.device, dtype=torch.long)
         
-        # Process through GatedGNN with simplified graph
         x = self.gnn(x_before_gnn, edges, node_graph_ind)
         
         if self.layernorm:
             x = self.ln(x)
 
-        # Simple param groups (HyperPPO style) - remap indices to sequential
         param_groups = {key: [] for key in ['cls_w', 'cls_b', '1d']}
         
-        # Create a mapping from original indices to sequential indices
         original_to_sequential = {}
         sequential_idx = 0
         for param_idx in sorted(params_map.keys()):
             original_to_sequential[param_idx] = sequential_idx
             sequential_idx += 1
             
-        # Remap all indices to sequential
         for key, inds in mapping.items():
             if key in param_groups:
-                # Convert original indices to sequential indices
                 sequential_inds = [original_to_sequential[idx] for idx in inds if idx in original_to_sequential]
                 param_groups[key].extend(sequential_inds)
             else:
-                # This shouldn't happen with simplified approach
                 sequential_inds = [original_to_sequential[idx] for idx in inds if idx in original_to_sequential]
                 param_groups[key] = sequential_inds
                 
-        # Predict max-sized parameters for a batch of nets using decoders
         w = {}
         for key, inds in param_groups.items():
             if len(inds) == 0:
@@ -265,18 +230,14 @@ class MLP_GHN(nn.Module):
             
             x_ = x[torch.tensor(inds, device=x.device)]
             if key == 'cls_w':
-                # SINGLE CONVDECODER APPROACH - Handles both CNN and MLP weights via tiling
-                # Your uniform architecture (96ch CNNs + 256 MLPs) works perfectly with [256,256,3,3]
                 max_shape = self.decoder.out_shape[2:]  # Get (h, w) from decoder's out_shape
                 w[key] = self.decoder(x_, max_shape, class_pred=False)
                 
             else:
-                # 1D weights (biases, batch norm params)
                 w[key] = self.decoder_1d(x_).view(len(inds), 2, -1)
                 if key == 'cls_b':
                     w[key] = self.bias_class(w[key])
 
-        # Transfer predicted parameters (w) to the networks
         n_tensors, n_params = 0, 0
         for matched, key, w_ind in params_map.values():
 
@@ -341,10 +302,8 @@ class MLP_GHN(nn.Module):
         n_nodes = []
         for j in range(len(nets_torch)):
             len_node_info = len(list(nets_torch[j].named_parameters()))
-            # Create proper node info based on actual parameter shapes and names
             node_info = []
             for i, (name, param) in enumerate(nets_torch[j].named_parameters()):
-                # Determine parameter type based on name and shape
                 if 'weight' in name:
                     if len(param.shape) == 4:  # Convolutional weight
                         param_type = 'conv4d'
@@ -366,11 +325,9 @@ class MLP_GHN(nn.Module):
             
             node_infos.append([node_info])
             n_nodes.append(len_node_info + 1)
-        # for b, net in enumerate(nets_torch):
         for b, (node_info, net) in enumerate(zip(node_infos, nets_torch)):        
             target_modules = named_layered_modules(net)
 
-            # param_ind = torch.sum(graphs.n_nodes[:b]).item()
             param_ind = sum(n_nodes[:b])
 
             for cell_id in range(len(node_info)):
@@ -404,10 +361,8 @@ class MLP_GHN(nn.Module):
                         matched_names.append(matched[0]['param_name'])
                         sz = matched[0]['sz']
                         if len(sz) == 1:
-                            # 1D parameters (biases, batch norm weights)
                             key = 'cls_b' if last_bias else '1d'
                         else:
-                            # ALL weights (2D MLP, 4D Conv) → 'cls_w' (HyperPPO style)
                             key = 'cls_w'
                         if key not in mapping:
                             mapping[key] = []
@@ -419,7 +374,6 @@ class MLP_GHN(nn.Module):
                     len(matched_names), len(set(matched_names)))
                 matched_names = set(matched_names)
 
-                # Prune redundant ops in Network by setting their params to None
                 for m in target_modules[cell_id]:
                     if m['is_w'] and m['param_name'] not in matched_names:
                         m['module'].weight = None
@@ -588,8 +542,6 @@ class ShapeEncoder(nn.Module):
 
         self.spatial = np.unique(list(range(1, max(12, max_shape[3]), 2)) + [14, 16])
 
-        # create a look up dictionary for faster determining the channel shape index
-        # include shapes not seen during training by assigning them the the closest seen values
         self.channels_lookup = {c: i for i, c in enumerate(self.channels)}
         self.channels_lookup_training = copy.deepcopy(self.channels_lookup)
         for c in range(4, self.ch_steps[0]):
@@ -606,11 +558,8 @@ class ShapeEncoder(nn.Module):
                 self.spatial_lookup[c] = self.spatial_lookup[self.spatial[np.argmin(abs(self.spatial - c))]]
 
         n_ch, n_s = len(self.channels), len(self.spatial)
-        # self.embed_spatial = torch.nn.Embedding(n_s + 1, hid // 4)
         self.embed_channel = torch.nn.Embedding(n_ch + 1, hid // 2)
 
-        # self.register_buffer('dummy_ind', torch.tensor([n_ch, n_ch, n_s, n_s], dtype=torch.long).view(1, 4),
-        #                      persistent=False)
         self.register_buffer('dummy_ind', torch.tensor([n_ch, n_ch, 0, 0], dtype=torch.long).view(1, 4),
                              persistent=False)
 
@@ -631,13 +580,8 @@ class ShapeEncoder(nn.Module):
                 sz = (sz[0], sz[1], 1, 1)
             assert len(sz) == 4, sz
 
-            # if not predict_class_layers and params_map[node_ind][1] in ['cls_w', 'cls_b']:
-            #     # keep the classification shape as though the GHN is used on the dataset it was trained on
-            #     sz = (self.num_classes, *sz[1:])
-
             recognized_sz = 0
             for i in range(4):
-                # if not in the dictionary, then use the maximum shape
                 if i < 2:  # for out/in channel dimensions
                     shape_ind[node_ind, i] = self.channels_lookup[sz[i] if sz[i] in self.channels_lookup else self.channels[-1]]
                     if self.debug_level and not self.printed_warning:
@@ -687,9 +631,6 @@ class ConvDecoder(nn.Module):
                          get_activation(None if j == len(hid) - 1 else 'relu')])
 
         self.conv = nn.Sequential(*conv)
-        # self.class_layer_predictor = nn.Sequential(  # Not used in simplified CNN+MLP approach (class_pred=False)
-        #     nn.ReLU(),
-        #     nn.Conv2d(out_shape[0], num_classes, 1))
 
 
     def forward(self, x, max_shape=(1,1), class_pred=False):
@@ -702,11 +643,6 @@ class ConvDecoder(nn.Module):
             out_shape = (out_shape[0], out_shape[1], max_shape[0], max_shape[1])
 
         x = self.conv(x).view(N, *out_shape)  # N, out, in, h, w
-
-        # if class_pred:  # Not used in simplified CNN+MLP approach
-        #     x = self.class_layer_predictor(x[:, :, :, :, 0])  # N, num_classes, 64, 1
-        #     x = x[:, :, :, 0]  # N, num_classes, 64
-
         return x
 
 
@@ -726,17 +662,11 @@ class MLPDecoder(nn.Module):
                        hid=(*hid, np.prod(out_shape)),
                        activation='relu',
                        last_activation=None)
-        # self.class_layer_predictor = nn.Sequential(  # Not used in simplified CNN+MLP approach (class_pred=False)
-        #     get_activation('relu'),
-        #     nn.Linear(hid[0], num_classes * out_shape[0]))
+
 
 
     def forward(self, x, max_shape=(1,1), class_pred=False):
-        # if class_pred:  # Not used in simplified CNN+MLP approach
-        #     x = list(self.mlp.fc.children())[0](x)  # shared first layer
-        #     x = self.class_layer_predictor(x)  # N, 1000, 64, 1
-        #     x = x.view(x.shape[0], self.num_classes, self.out_shape[1])
-        # else:
+
         x = self.mlp(x).view(-1, *self.out_shape)
         if sum(max_shape) > 0:
             x = x[:, :, :, :max_shape[0], :max_shape[1]]

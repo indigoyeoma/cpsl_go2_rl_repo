@@ -181,9 +181,9 @@ def main(args):
     print(f"  Invalid architectures: {invalid_count}")
     print(f"  Total processed: {len(all_architectures)}")
     
-    teacher_architecture = all_architectures[-1].copy()
-    teacher_architecture["id"] = "teacher"
-    del teacher_architecture["complexity"]
+    # teacher_architecture = all_architectures[-1].copy()
+    # teacher_architecture["id"] = "teacher"
+    # del teacher_architecture["complexity"]
     
     for i, arch in enumerate(architectures):
         arch["id"] = i
@@ -199,21 +199,21 @@ def main(args):
             arch["token_descriptor"].append("")
         arch["token_descriptor"] = arch["token_descriptor"][:FIXED_DESC_LENGTH]
     
-    while len(teacher_architecture["arch_descriptor"]) < FIXED_DESC_LENGTH:
-        teacher_architecture["arch_descriptor"].append(0)
-    teacher_architecture["arch_descriptor"] = teacher_architecture["arch_descriptor"][:FIXED_DESC_LENGTH]
+    # while len(teacher_architecture["arch_descriptor"]) < FIXED_DESC_LENGTH:
+    #     teacher_architecture["arch_descriptor"].append(0)
+    # teacher_architecture["arch_descriptor"] = teacher_architecture["arch_descriptor"][:FIXED_DESC_LENGTH]
     
-    if "token_descriptor" not in teacher_architecture:
-        teacher_token_descriptor = []
-        for layer in teacher_architecture["cnn_config"]:
-            teacher_token_descriptor.append(f"{layer['channels']}ch{layer['kernel']}k")
-        for dim in teacher_architecture["mlp_config"]:
-            teacher_token_descriptor.append(f"{dim}mlp")
-        teacher_architecture["token_descriptor"] = teacher_token_descriptor
+    # if "token_descriptor" not in teacher_architecture:
+    #     teacher_token_descriptor = []
+    #     for layer in teacher_architecture["cnn_config"]:
+    #         teacher_token_descriptor.append(f"{layer['channels']}ch{layer['kernel']}k")
+    #     for dim in teacher_architecture["mlp_config"]:
+    #         teacher_token_descriptor.append(f"{dim}mlp")
+    #     teacher_architecture["token_descriptor"] = teacher_token_descriptor
     
-    while len(teacher_architecture["token_descriptor"]) < FIXED_DESC_LENGTH:
-        teacher_architecture["token_descriptor"].append("")
-    teacher_architecture["token_descriptor"] = teacher_architecture["token_descriptor"][:FIXED_DESC_LENGTH]
+    # while len(teacher_architecture["token_descriptor"]) < FIXED_DESC_LENGTH:
+    #     teacher_architecture["token_descriptor"].append("")
+    # teacher_architecture["token_descriptor"] = teacher_architecture["token_descriptor"][:FIXED_DESC_LENGTH]
     
     data = {
         "metadata": {
@@ -235,7 +235,7 @@ def main(args):
             }
         },
         "architectures": architectures,
-        "teacher_model": teacher_architecture
+        # "teacher_model": teacher_architecture
     }
     
     output_dir = os.path.dirname(args.output)
@@ -248,7 +248,7 @@ def main(args):
     print("-" * 50)
     print(f"Architecture generation complete!")
     print(f"  Output file: {args.output}")
-    print(f"  Total architectures saved: {len(architectures)} + 1 teacher")
+    print(f"  Total architectures saved: {len(architectures)}")
     print(f"  Architecture distribution:")
     
     # Count architectures by CNN depth
@@ -260,25 +260,25 @@ def main(args):
     for depth in sorted(cnn_depth_counts.keys()):
         print(f"    CNN depth {depth}: {cnn_depth_counts[depth]} architectures")
     
-    print(f"  Teacher architecture: {len(teacher_architecture['cnn_config'])} CNN + {len(teacher_architecture['mlp_config'])-1} MLP layers")
+    # print(f"  Teacher architecture: {len(teacher_architecture['cnn_config'])} CNN + {len(teacher_architecture['mlp_config'])-1} MLP layers")
     print(f"  GHN max shape: {data['metadata']['ghn_config']['ghn_max_shape']}")
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Generate ALL possible CNN+MLP architectures for GHN training")
-    parser.add_argument("--output", type=str, default="configs_go2/architecture_go2_depth84.json", help="Output JSON file path")
+    parser.add_argument("--output", type=str, default="configs/architecture_go2_depth84.json", help="Output JSON file path")
     parser.add_argument("--name", type=str, default="", help="Name to append to filename (e.g., --name rtx4090 creates file_rtx4090.json)")
     parser.add_argument("--seed", type=int, default=42, help="Random seed for reproducibility")
     parser.add_argument("--input_size", type=int, default=84, help="Input image size (width/height)")
     parser.add_argument("--output_dim", type=int, default=12, help="Final output dimension (action space)")
     parser.add_argument("--state_dim", type=int, default=48, help="State vector dimension")
-    parser.add_argument("--cnn_output_dim", type=int, default=256, help="CNN branch output dimension")
-    parser.add_argument("--state_mlp_dim", type=int, default=256, help="State MLP branch output dimension")
-    parser.add_argument("--cnn_layer_options", type=int, nargs="+", default=[3,4], help="CNN layer count options - optimized for depth")
+    parser.add_argument("--cnn_output_dim", type=int, default=128, help="CNN branch output dimension")
+    parser.add_argument("--state_mlp_dim", type=int, default=128, help="State MLP branch output dimension")
+    parser.add_argument("--cnn_layer_options", type=int, nargs="+", default=[3,4,5], help="CNN layer count options - optimized for depth")
     parser.add_argument("--mlp_layer_options", type=int, nargs="+", default=[2], help="MLP layer count options - 2 layers work best")
-    parser.add_argument("--cnn_channel_options", type=int, nargs="+", default=[16,32,48,64,96,128], help="CNN channel options - diverse range for depth features")
+    parser.add_argument("--cnn_channel_options", type=int, nargs="+", default=[16,32,48,64], help="CNN channel options - diverse range for depth features")
     parser.add_argument("--cnn_kernel_options", type=int, nargs="+", default=[3], help="CNN kernel size options - 3x3 works best for 84x84 depth")
-    parser.add_argument("--mlp_dim_options", type=int, nargs="+", default=[256,384,512], help="MLP hidden dimension options - larger dims for better capacity")
+    parser.add_argument("--mlp_dim_options", type=int, nargs="+", default=[128,256,512], help="MLP hidden dimension options - larger dims for better capacity")
     
     args = parser.parse_args()
     

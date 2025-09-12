@@ -60,14 +60,11 @@ class CnnMlpNetwork(nn.Module):
         
         self.cnn = nn.Sequential(*cnn_layers)
         
-        # Calculate CNN output size from architecture config
         self.cnn_output_size = self._calculate_cnn_output_size(cnn_config, input_size)
-        
-        # CNN post-processing MLP (flattened CNN → fixed dimension)
+
         self.cnn_output_dim = cnn_mlp_config[0] if cnn_mlp_config else mlp_config[0]
         self.cnn_mlp = nn.Linear(self.cnn_output_size, self.cnn_output_dim)
         
-        # State processing branch (if enabled)
         if self.has_state_branch:
             self.state_mlp_dim = state_mlp_config[0]
             self.state_mlp = nn.Linear(state_dim, self.state_mlp_dim)
@@ -75,13 +72,11 @@ class CnnMlpNetwork(nn.Module):
             self.state_mlp_dim = 0
             self.state_mlp = None
         
-        # Main MLP layers
         mlp_layers = []
         for i in range(len(mlp_config) - 1):
             mlp_layers.append(nn.Linear(mlp_config[i], mlp_config[i+1]))
             mlp_layers.append(nn.ReLU(inplace=True))
         
-        # Final output layer
         mlp_layers.append(nn.Linear(mlp_config[-1], output_dim))
         
         self.mlp = nn.Sequential(*mlp_layers)
@@ -108,19 +103,15 @@ class CnnMlpNetwork(nn.Module):
         """Extract named layered modules for GHN compatibility"""
         layered_modules = []
         
-        # Add CNN layers
         for i, layer in enumerate(self.cnn):
             if isinstance(layer, nn.Conv2d):
                 layered_modules.append((f'cnn.{i}', layer))
         
-        # Add CNN MLP layer
         layered_modules.append(('cnn_mlp', self.cnn_mlp))
         
-        # Add state MLP if present
         if self.state_mlp is not None:
             layered_modules.append(('state_mlp', self.state_mlp))
         
-        # Add main MLP layers
         for i, layer in enumerate(self.mlp):
             if isinstance(layer, nn.Linear):
                 layered_modules.append((f'mlp.{i}', layer))
@@ -133,39 +124,31 @@ class CnnMlpNetwork(nn.Module):
             x: RGB image tensor [batch, channels, height, width]
             state: Optional state tensor [batch, state_dim] for parallel processing
         """
-        # Check for empty input batch before processing
         if x.size(0) == 0:
             raise RuntimeError(f"Empty input batch (batch_size=0). Input shape: {x.shape}. This is likely a parallel processing batch splitting issue.")
             
-        # CNN forward pass
         cnn_out = self.cnn(x)
             
-        # Check for empty CNN output before reshaping
         if cnn_out.numel() == 0:
             raise RuntimeError(f"CNN output is empty (0 elements). Input shape: {x.shape}, CNN config: {[{'ch': l.out_channels, 'k': l.kernel_size, 's': l.stride, 'p': l.padding} for l in self.cnn if hasattr(l, 'out_channels')]}")
         
-        # Flatten CNN output - use reshape instead of view for non-contiguous tensors
         flattened = cnn_out.reshape(cnn_out.size(0), -1)
         
-        # Verify size matches calculation
         actual_size = flattened.size(1)
         if actual_size != self.cnn_output_size:
-            print(f"⚠️ CNN output size mismatch: expected {self.cnn_output_size}, got {actual_size}")
+            print(f"CNN output size mismatch: expected {self.cnn_output_size}, got {actual_size}")
         
-        # CNN post-processing
         cnn_processed = F.relu(self.cnn_mlp(flattened))
         
-        # Process state branch and concatenate if enabled
         if self.has_state_branch:
             if state is None:
                 raise ValueError("State input required for parallel architecture but none provided")
             state_processed = F.relu(self.state_mlp(state))
-            # Concatenate vision and state features
             combined = torch.cat([cnn_processed, state_processed], dim=1)
         else:
             combined = cnn_processed
         
-        # Main MLP forward pass
+
         output = self.mlp(combined)
         
         return output
