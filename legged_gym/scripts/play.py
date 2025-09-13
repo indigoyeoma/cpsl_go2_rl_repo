@@ -9,6 +9,8 @@ from legged_gym.envs import *
 from legged_gym.utils import get_args, export_policy_as_jit, task_registry, Logger
 import numpy as np
 import torch
+import json
+import random
 from legged_gym.utils import webviewer
 
 def play(args):

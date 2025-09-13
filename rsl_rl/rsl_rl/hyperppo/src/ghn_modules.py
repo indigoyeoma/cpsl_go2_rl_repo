@@ -166,23 +166,26 @@ class MLP_GHN(nn.Module):
         shape_tensors = []
         
         
+        # Collect shape values first, then create tensors in batch
+        shape_vals = []
         for idx in sorted(params_map.keys()):
             matched, key, w_ind = params_map[idx]
             if matched is None or 'sz' not in matched:
-                shape_tensors.append(torch.tensor([1.0, 1.0, 1.0, 1.0], device=device))
+                shape_vals.append([1.0, 1.0, 1.0, 1.0])
             else:
                 sz = matched['sz']
                 if len(sz) == 4:  # Conv weight: (out_ch, in_ch, k_h, k_w)
-                    shape_tensors.append(torch.tensor([float(sz[0]), float(sz[1]), float(sz[2]), float(sz[3])], device=device))
+                    shape_vals.append([float(sz[0]), float(sz[1]), float(sz[2]), float(sz[3])])
                 elif len(sz) == 2:  # MLP weight: (out_dim, in_dim)
-                    shape_tensors.append(torch.tensor([float(sz[0]), float(sz[1]), 1.0, 1.0], device=device))
+                    shape_vals.append([float(sz[0]), float(sz[1]), 1.0, 1.0])
                 elif len(sz) == 1:  # Bias: (dim,)
-                    shape_tensors.append(torch.tensor([float(sz[0]), 1.0, 1.0, 1.0], device=device))
+                    shape_vals.append([float(sz[0]), 1.0, 1.0, 1.0])
                 else:
-                    shape_tensors.append(torch.tensor([1.0, 1.0, 1.0, 1.0], device=device))
+                    shape_vals.append([1.0, 1.0, 1.0, 1.0])
         
-        if shape_tensors:
-            shape_tensor = torch.stack(shape_tensors)
+        # Create all shape tensors in one batch operation
+        if shape_vals:
+            shape_tensor = torch.tensor(shape_vals, dtype=torch.float32, device=device)
             shape_tensor = torch.log(shape_tensor + 1.0) / 10.0  # Log scale and normalize
             x_before_gnn = self.shape_enc3(shape_tensor)
         else:
@@ -228,7 +231,7 @@ class MLP_GHN(nn.Module):
             if len(inds) == 0:
                 continue
             
-            x_ = x[torch.tensor(inds, device=x.device)]
+            x_ = x[torch.tensor(inds, dtype=torch.long, device=x.device)]
             if key == 'cls_w':
                 max_shape = self.decoder.out_shape[2:]  # Get (h, w) from decoder's out_shape
                 w[key] = self.decoder(x_, max_shape, class_pred=False)
@@ -753,7 +756,7 @@ class GatedGNN(nn.Module):
         traversal_orders = [1, 0]  # forward, backward
 
         edge_offset = torch.cumsum(F.pad(n_nodes[:-1], (1, 0)), 0)[edge_graph_ind]
-        node_inds = torch.cat([torch.arange(n) for n in n_nodes]).to(x.device).view(-1, 1)
+        node_inds = torch.cat([torch.arange(n, device=x.device) for n in n_nodes]).view(-1, 1)
 
         # Parallelize computation of indices and masks of one/all hops
         # This will slightly speed up the operations in the main loop
@@ -782,7 +785,7 @@ class GatedGNN(nn.Module):
                     m = torch.zeros(B, C, dtype=m.dtype, device=m.device).scatter_add_(0, edge_graph_ind[e_1hop], m)     # sum the transformed features into a (B,C) tensor
                     if self.ve:
                         e = torch.nonzero(masks_all[order][node, :]).view(-1)       # virtual edges connected to node
-                        m_ve = self.mlp_ve(hx[start[e]]) / ve[e].to(m)              # transform node features of all ve-hop neighbors
+                        m_ve = self.mlp_ve(hx[start[e]]) / ve[e].to(m.device)       # transform node features of all ve-hop neighbors
                         m = m.scatter_add_(0, edge_graph_ind[e], m_ve)              # sum m and m_ve according to Eq. 4 in the paper
 
                     # Udpate node hidden states in parallel for a batch of graphs

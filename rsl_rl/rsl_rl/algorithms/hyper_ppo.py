@@ -123,8 +123,10 @@ class HyperPPO:
         self.storage = HyperRolloutStorage(num_envs, num_transitions_per_env, actor_obs_shape, critic_obs_shape, action_shape, 
                                          meta_batch_size=meta_batch_size, device=self.device)
         
-        # Note: Architectures are already initialized in HyperPPOActorCritic constructor
-        # No need to resample here as they're ready for the first rollout
+        # HYPERPPO: Initial architecture setup for first rollout
+        if self.hyper_enabled and hasattr(self.actor_critic, 'resample_architectures'):
+            print("HyperPPO: Initial architecture sampling for first rollout")
+            self.actor_critic.resample_architectures()
 
     def test_mode(self):
         self.actor_critic.test()
@@ -183,8 +185,8 @@ class HyperPPO:
         HyperPPO Update with GHN Training Integration
         
         Key GHN Training Steps:
-        1. MAINTAIN: Keep architectures from rollout phase (DO NOT resample)
-        2. Minibatch Loop: Generate fresh weights for SAME architectures (GHN training signal)
+        1. MAINTAIN: Keep architectures from rollout phase (DO NOT resample during training)
+        2. Minibatch Loop: Generate fresh weights for SAME architectures (GHN training signal) 
         3. End: Resample architectures for NEXT rollout iteration
         """
         mean_value_loss = 0
@@ -199,7 +201,7 @@ class HyperPPO:
             if hasattr(self.actor_critic, 'monitor_training'):
                 self.actor_critic.monitor_training()
         
-        # HyperPPO Training: Detailed per-epoch, per-minibatch structure
+        # HyperPPO Training: GHN training via repeated weight generation
         total_weight_regenerations = 0
         
         # FOR EACH EPOCH
@@ -217,12 +219,12 @@ class HyperPPO:
                 old_mu_batch, old_sigma_batch, hid_states_batch, masks_batch, arch_descriptors_batch in minibatch_generator:
 
                 minibatch_in_epoch += 1
-                total_weight_regenerations += 1
                 
-                # CRITICAL HYPERPPO: Weight regeneration for same architectures with fresh weights
-                # This happens once per minibatch to ensure GHN training signal
+                # CRITICAL HYPERPPO: Regenerate weights for same architectures 
+                # This trains the GHN by showing it the same architectures multiple times
                 if self.hyper_enabled and hasattr(self.actor_critic, 'regenerate_weights'):
                     self.actor_critic.regenerate_weights()
+                    total_weight_regenerations += 1
                 
                 # Standard PPO forward pass with architecture descriptors
                 self.actor_critic.act(obs_batch, arch_descriptors=arch_descriptors_batch)
@@ -289,7 +291,7 @@ class HyperPPO:
 
         # CRITICAL HYPERPPO STEP 3: Resample architectures for NEXT rollout iteration
         if self.hyper_enabled and hasattr(self.actor_critic, 'resample_architectures'):
-            self.actor_critic.resample_architectures()  # calls change_graph(repeat_sample=False)
+            self.actor_critic.resample_architectures()
 
         # Calculate averages across all minibatches
         mean_value_loss /= total_minibatches

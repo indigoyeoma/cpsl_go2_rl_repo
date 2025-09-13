@@ -179,32 +179,29 @@ class hyperActor(nn.Module):
         self.list_of_shape_inds = []
         
         for config in self.architecture_configs:
-            shape_ind = [torch.tensor(0.0).to(self.device)]  
+            shape_vals = [0.0]  # Collect values first
             
             for layer in config['cnn_config']:
                 desc = f"{layer['channels']}ch{layer['kernel']}ker"
                 idx = self.component_vocab[desc]
-                shape_ind.append(torch.tensor(float(idx)).to(self.device))
-                shape_ind.append(torch.tensor(float(idx)).to(self.device))  # Double like original
+                shape_vals.extend([float(idx), float(idx)])  # Double like original
             
             if 'cnn_mlp_config' in config and config['cnn_mlp_config']:
                 for units in config['cnn_mlp_config']:
                     desc = f"{units}mlp"
                     idx = self.component_vocab[desc]
-                    shape_ind.append(torch.tensor(float(idx)).to(self.device))
-                    shape_ind.append(torch.tensor(float(idx)).to(self.device))
+                    shape_vals.extend([float(idx), float(idx)])
             
             for units in config['mlp_config']:
                 desc = f"{units}mlp"
                 idx = self.component_vocab[desc]
-                shape_ind.append(torch.tensor(float(idx)).to(self.device))
-                shape_ind.append(torch.tensor(float(idx)).to(self.device))
+                shape_vals.extend([float(idx), float(idx)])
             
             output_idx = self.component_vocab[output_desc]
-            shape_ind.append(torch.tensor(float(output_idx)).to(self.device))
-            shape_ind.append(torch.tensor(float(output_idx)).to(self.device))
+            shape_vals.extend([float(output_idx), float(output_idx)])
             
-            shape_ind = torch.stack(shape_ind).view(-1, 1)
+            # Create tensor directly on GPU in one batch operation
+            shape_ind = torch.tensor(shape_vals, dtype=torch.float32, device=self.device).view(-1, 1)
             self.list_of_shape_inds.append(shape_ind)
         
         self.list_of_shape_inds_lenths = [x.squeeze().numel() for x in self.list_of_shape_inds]
@@ -213,7 +210,7 @@ class hyperActor(nn.Module):
         for i in range(len(self.list_of_shape_inds)):
             num_pad = self.shape_inds_max_len - self.list_of_shape_inds[i].shape[0]
             if num_pad > 0:
-                pad_tensor = torch.tensor(-1.0).to(self.device).repeat(num_pad, 1)
+                pad_tensor = torch.full((num_pad, 1), -1.0, device=self.device, dtype=torch.float32)
                 self.list_of_shape_inds[i] = torch.cat([self.list_of_shape_inds[i], pad_tensor], 0)
         
         self.list_of_shape_inds = torch.stack(self.list_of_shape_inds)
@@ -348,11 +345,11 @@ class hyperActor(nn.Module):
         _, embeddings = self.ghn(self.current_model, shape_ind=self.sampled_shape_inds, return_embeddings=True)
 
 
-    def forward(self, obs, state_obs=None, track=True):
+    def forward(self, obs, state_obs=None, track=False):
         ''' Do a forward pass through the current CNN+MLP models with parallel state processing. 
             obs: image observations [batch_size, channels, height, width]
-            state_obs: state observations [batch_size, state_dim] (optional for parallel processing)
-            track: if True, we track the architecture descriptors and indices
+            state_obs: state observations [batch_size, state_dim] (optional for parallel processing)  
+            track: if True, we track the architecture descriptors (disabled by default for speed)
         '''
         # Ensure architectures are sampled before forward pass
         if self.current_model is None:
@@ -367,7 +364,7 @@ class hyperActor(nn.Module):
                 for i in range(len(self.current_model))
             ])
             self.sampled_indices_per_state_dim = torch.cat([
-                torch.tensor([self.sampled_indices[i]]).repeat(batch_per_net) 
+                torch.full((batch_per_net,), self.sampled_indices[i], device=self.device, dtype=torch.long)
                 for i in range(len(self.current_model))
             ])
             
@@ -402,7 +399,7 @@ class hyperActor(nn.Module):
         mu, log_std = self.forward(obs, state_obs)
         std = log_std.exp()
         dist = Normal(mu, std)
-        e = dist.rsample().to(obs.device)
+        e = dist.rsample()  # Already on correct device
         action = torch.tanh(e)
         log_prob = (dist.log_prob(e) - torch.log(1 - action.pow(2) + epsilon)).sum(1, keepdim=True)
         
@@ -417,7 +414,7 @@ class hyperActor(nn.Module):
         mu, log_std = self.forward(obs, state_obs)
         std = log_std.exp()
         dist = Normal(mu, std)
-        e = dist.rsample().to(obs.device)
+        e = dist.rsample()  # Already on correct device
         action = torch.tanh(e)
         return action.detach()  # Keep on GPU for training efficiency
     

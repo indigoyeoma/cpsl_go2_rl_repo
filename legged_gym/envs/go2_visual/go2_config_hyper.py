@@ -2,7 +2,7 @@ from legged_gym.envs.base.legged_robot_config import LeggedRobotCfg, LeggedRobot
 
 class GO2HyperCfg(LeggedRobotCfg):
     class env(LeggedRobotCfg.env):
-        num_envs = 1024
+        num_envs = 512
         num_observations = 48 + 84*84  # 48 state + 7056 depth = 7104 total
         
     class init_state(LeggedRobotCfg.init_state):
@@ -44,7 +44,7 @@ class GO2HyperCfg(LeggedRobotCfg):
 
     class depth:
         use_camera = True
-        camera_num_envs = 1024
+        camera_num_envs = 512
         position = [0.05, 0, 0.02]
         position_rand = 0.01
         angle = [0, 0]
@@ -81,7 +81,7 @@ class GO2HyperCfgPPO(LeggedRobotCfgPPO):
         schedule = 'fixed'
         learning_rate = 7e-4
         num_learning_epochs = 3
-        num_mini_batches = 16
+        num_mini_batches = 8
         
     class runner(LeggedRobotCfgPPO.runner):
         run_name = ''

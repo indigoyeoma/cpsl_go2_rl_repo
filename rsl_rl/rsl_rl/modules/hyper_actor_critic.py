@@ -108,8 +108,6 @@ class HyperActorWrapper(nn.Module):
                  multi_gpu: bool = False,
                  input_channels: int = 1,  # For depth images
                  input_size: int = 84,     # 84x84 depth images
-                 use_teacher_distillation: bool = True,
-                 teacher_update_freq: int = 100,
                  distillation_weight: float = 0.1,
                  **kwargs):
         """
@@ -124,8 +122,6 @@ class HyperActorWrapper(nn.Module):
             multi_gpu: Whether to use multiple GPUs
             input_channels: Number of input channels (1 for depth)
             input_size: Input image size (84 for 84x84 depth)
-            use_teacher_distillation: Whether to use teacher distillation
-            teacher_update_freq: How often to update teacher network
             distillation_weight: Weight for distillation loss
         """
         if kwargs:
@@ -145,9 +141,6 @@ class HyperActorWrapper(nn.Module):
         self.input_size = input_size
         self.std_mode = 'multi'  # Use multi std mode for different architectures
         
-        # Teacher distillation parameters
-        self.use_teacher_distillation = use_teacher_distillation
-        self.teacher_update_freq = teacher_update_freq
         self.distillation_weight = distillation_weight
         self.update_count = 0
         
@@ -169,9 +162,6 @@ class HyperActorWrapper(nn.Module):
         # Initialize standard deviation vectors for each architecture
         self._initialize_std()
         
-        # Initialize teacher network for distillation
-        if self.use_teacher_distillation:
-            self._initialize_teacher_network()
         
         # Current sampling state
         self.sampled_indices = None
@@ -320,34 +310,13 @@ class HyperActorWrapper(nn.Module):
         """Initialize standard deviation parameters for each architecture"""
         if self.std_mode == 'multi':
             self.log_std = nn.ParameterList([
-                nn.Parameter(torch.zeros(1, self.act_dim), requires_grad=True)
+                nn.Parameter(torch.zeros(1, self.act_dim, device=self.device), requires_grad=True)
                 for _ in self.list_of_arc_indices
             ])
         else:
-            self.log_std = nn.Parameter(torch.zeros(1, self.act_dim))
+            self.log_std = nn.Parameter(torch.zeros(1, self.act_dim, device=self.device))
         
     
-    def _initialize_teacher_network(self):
-        """Initialize teacher network for distillation"""
-        # Teacher network is a fixed CNN+MLP architecture that provides stable guidance
-        # Use the first (lightweight) architecture as teacher
-        teacher_config = self.architecture_configs[0]
-        
-        self.teacher_network = CnnMlpNetwork(
-            cnn_config=teacher_config['cnn_config'],
-            cnn_mlp_config=teacher_config['cnn_mlp_config'],
-            mlp_config=teacher_config['mlp_config'],
-            input_channels=self.input_channels,
-            output_dim=self.act_dim * 2,  # mu + logstd for continuous actions
-            input_size=self.input_size
-        ).to(self.device)
-        
-        # Initialize teacher with same weights as the first model
-        self.teacher_network.load_state_dict(self.all_models[0].state_dict())
-        
-        # Teacher std parameters (separate from student)
-        self.teacher_log_std = nn.Parameter(torch.zeros(1, self.act_dim), requires_grad=True)
-        
     
     def change_graph(self, repeat_sample=False):
         """
@@ -479,79 +448,6 @@ class HyperActorWrapper(nn.Module):
         
         return mu, log_std
     
-    def teacher_forward(self, observations) -> Tuple[torch.Tensor, torch.Tensor]:
-        """
-        Forward pass through teacher network
-        
-        Args:
-            observations: Input observations [batch_size, obs_dim]
-            
-        Returns:
-            teacher_mu: Teacher mean actions [batch_size, act_dim]
-            teacher_log_std: Teacher log standard deviation [batch_size, act_dim]
-        """
-        if not self.use_teacher_distillation:
-            raise ValueError("Teacher distillation is not enabled")
-        
-        batch_size = observations.shape[0]
-        
-        # Extract depth images from observations (same as student)
-        depth_flat = observations[:, self.base_obs_dim:]  # [batch_size, 7056]
-        depth_images = depth_flat.reshape(batch_size, 1, 84, 84)  # [batch_size, 1, 84, 84]
-        
-        # Forward through teacher network
-        teacher_output = self.teacher_network(depth_images)  # [batch_size, act_dim * 2]
-        
-        # Split into mu and log_std
-        teacher_mu = teacher_output[:, :self.act_dim]  # [batch_size, act_dim]
-        teacher_log_std = self.teacher_log_std.expand(batch_size, -1)  # [batch_size, act_dim]
-        
-        return teacher_mu, teacher_log_std
-    
-    def compute_distillation_loss(self, observations) -> torch.Tensor:
-        """
-        Compute KL(teacher||student) distillation loss
-        
-        Args:
-            observations: Input observations [batch_size, obs_dim]
-            
-        Returns:
-            kl_loss: KL divergence loss KL(teacher||student)
-        """
-        if not self.use_teacher_distillation:
-            return torch.tensor(0.0, device=self.device)
-        
-        with torch.no_grad():
-            # Get teacher distribution (no grad needed)
-            teacher_mu, teacher_log_std = self.teacher_forward(observations)
-            teacher_std = torch.exp(teacher_log_std)
-        
-        # Get student distribution
-        student_mu, student_log_std = self.forward(observations, track=False)
-        student_std = torch.exp(student_log_std)
-        
-        # Create distributions
-        teacher_dist = Normal(teacher_mu.detach(), teacher_std.detach())
-        student_dist = Normal(student_mu, student_std)
-        
-        # Compute KL(teacher||student) = KL(p||q) where p=teacher, q=student
-        kl_div = torch.distributions.kl_divergence(teacher_dist, student_dist)
-        
-        # Sum over action dimensions and average over batch
-        kl_loss = kl_div.sum(dim=-1).mean()
-        
-        return kl_loss
-    
-    def update_teacher_network(self):
-        """Update teacher network periodically with current best performing model"""
-        if not self.use_teacher_distillation:
-            return
-        
-        self.update_count += 1
-        if self.update_count % self.teacher_update_freq == 0:
-            # Update teacher with the first model (could be improved with best performer selection)
-            if self.current_models and len(self.current_models) > 0:
-                self.teacher_network.load_state_dict(self.current_models[0].state_dict())
     
     def get_training_metrics(self):
         """Get GHN training metrics for logging (PPO style)"""
@@ -574,11 +470,6 @@ class HyperActorWrapper(nn.Module):
             else:
                 metrics['ghn_grad_norm'] = 0.0
             
-            # Teacher distillation info
-            if self.use_teacher_distillation:
-                metrics['teacher_update_count'] = self.update_count
-                metrics['teacher_update_freq'] = self.teacher_update_freq
-                metrics['distillation_weight'] = self.distillation_weight
         
         return metrics
 
@@ -647,7 +538,7 @@ class CustomActorCritic(nn.Module):
         print(f"Custom Actor-Critic initialized: {num_actor_obs} -> {num_actions}")
         
         # Action noise parameter
-        self.std = nn.Parameter(init_noise_std * torch.ones(num_actions))
+        self.std = nn.Parameter(init_noise_std * torch.ones(num_actions, device=self.device))
         self.distribution = None
         
         # Disable args validation for speedup
@@ -822,8 +713,6 @@ class HyperPPOActorCritic(nn.Module):
                  activation='elu',
                  init_noise_std=1.0,
                  device='cuda',
-                 use_teacher_distillation=True,
-                 teacher_update_freq=100,
                  distillation_weight=0.1,
                  **kwargs):
         """
@@ -839,8 +728,6 @@ class HyperPPOActorCritic(nn.Module):
             activation: Activation function
             init_noise_std: Initial action noise
             device: Computation device
-            use_teacher_distillation: Whether to use teacher distillation
-            teacher_update_freq: How often to update teacher network
             distillation_weight: Weight for distillation loss
         """
         if kwargs:
@@ -1050,46 +937,6 @@ class HyperPPOActorCritic(nn.Module):
         # Fallback: return zero descriptors if no architecture is set
         return torch.zeros(1, 16, device=self.device)
     
-    def compute_distillation_loss(self, observations) -> torch.Tensor:
-        """
-        Compute teacher distillation loss KL(teacher||student)
-        
-        Args:
-            observations: Input observations [batch_size, obs_dim]
-            
-        Returns:
-            distillation_loss: Weighted KL divergence loss
-        """
-        kl_loss = self.hyper_actor.compute_distillation_loss(observations)
-        return self.distillation_weight * kl_loss
-    
-    def update_teacher_network(self):
-        """Update teacher network in HyperActor"""
-        self.hyper_actor.update_teacher_network()
-    
-    def get_teacher_action_distribution(self, observations):
-        """
-        Get teacher action distribution for comparison
-        
-        Args:
-            observations: Input observations [batch_size, obs_dim]
-            
-        Returns:
-            teacher_dist: Teacher action distribution
-        """
-        if not self.hyper_actor.use_teacher_distillation:
-            return None
-        
-        teacher_mu, teacher_log_std = self.hyper_actor.teacher_forward(observations)
-        teacher_std = torch.exp(teacher_log_std)
-        return Normal(teacher_mu, teacher_std)
-    
-    def get_distillation_loss(self, observations):
-        """Get distillation loss for PPO update"""
-        distillation_loss = self.compute_distillation_loss(observations)
-        # Update teacher network periodically
-        self.update_teacher_network()
-        return distillation_loss
 
 
 class CustomVisualActorCritic(nn.Module):
@@ -1164,7 +1011,7 @@ class CustomVisualActorCritic(nn.Module):
         print(f"Custom Visual Actor-Critic initialized with depth encoder")
         
         # Action noise
-        self.std = nn.Parameter(init_noise_std * torch.ones(num_actions))
+        self.std = nn.Parameter(init_noise_std * torch.ones(num_actions, device=self.device))
         self.distribution = None
         Normal.set_default_validate_args = False
     
@@ -1285,11 +1132,6 @@ class CustomVisualActorCritic(nn.Module):
     def get_hidden_states(self):
         """Get hidden states - not implemented for non-recurrent networks"""
         return None
-    
-    def regenerate_weights(self):
-        """Regenerate weights using GHN (for HyperPPO minibatch isolation)"""
-        if hasattr(self, 'change_graph'):
-            self.change_graph(repeat_sample=True)
     
     def resample_architectures(self):
         """Resample architectures for next rollout (for HyperPPO)"""
