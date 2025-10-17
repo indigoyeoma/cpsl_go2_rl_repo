@@ -1,21 +1,34 @@
 from legged_gym.envs.base.legged_robot_config import LeggedRobotCfg, LeggedRobotCfgPPO
 
-class GO2DepthCfg(LeggedRobotCfg):
+class GO2ObsAvoidDepthCfg(LeggedRobotCfg):
+
     class env(LeggedRobotCfg.env):
         num_envs = 512
         num_observations = 48 + 84*84  # 48 state + 7056 depth = 7104 total
-        
+        num_privileged_obs = None
+        num_actions = 12
+        env_spacing = 20.0  # 10m spacing to prevent cameras seeing neighboring robots
+        send_timeouts = True
+        episode_length_s = 20
+
+    class terrain(LeggedRobotCfg.terrain):
+        mesh_type = 'plane'
+        measure_heights = False
+
     class init_state(LeggedRobotCfg.init_state):
-        pos = [0.0, 0.0, 0.42]
-        default_joint_angles = {
+        pos = [0.0, 0.0, 0.42]  # x,y,z [m] - fixed at origin
+        rot = [0.0, 0.0, 0.0, 1.0]  # x,y,z,w [quat] - will be randomized in reset_idx
+        default_joint_angles = {  # target angles when action = 0.0
             'FL_hip_joint': 0.1,
             'RL_hip_joint': 0.1,
             'FR_hip_joint': -0.1,
             'RR_hip_joint': -0.1,
+
             'FL_thigh_joint': 0.8,
-            'RL_thigh_joint': 1.,
+            'RL_thigh_joint': 1.0,
             'FR_thigh_joint': 0.8,
-            'RR_thigh_joint': 1.,
+            'RR_thigh_joint': 1.0,
+
             'FL_calf_joint': -1.5,
             'RL_calf_joint': -1.5,
             'FR_calf_joint': -1.5,
@@ -24,23 +37,18 @@ class GO2DepthCfg(LeggedRobotCfg):
 
     class control(LeggedRobotCfg.control):
         control_type = 'P'
-        stiffness = {'joint': 20.}
-        damping = {'joint': 0.5}
+        stiffness = {'joint': 30.0}  # [N*m/rad]
+        damping = {'joint': 0.6}     # [N*m*s/rad]
         action_scale = 0.25
         decimation = 4
 
     class asset(LeggedRobotCfg.asset):
         file = '{LEGGED_GYM_ROOT_DIR}/resources/robots/go2/urdf/go2.urdf'
-        name = "go2_depth"
+        name = "go2_obsavoid_depth"
         foot_name = "foot"
         penalize_contacts_on = ["thigh", "calf"]
         terminate_after_contacts_on = ["base"]
         self_collisions = 1
-
-    class terrain(LeggedRobotCfg.terrain):
-        mesh_type = 'plane'  # Ensure we have a floor for the depth camera
-        horizontal_scale = 0.1 # [m]
-        vertical_scale = 0.005 # [m]
 
     class depth:
         use_camera = True
@@ -57,12 +65,21 @@ class GO2DepthCfg(LeggedRobotCfg):
         update_interval = 4
         buffer_len = 1
 
+    class domain_rand(LeggedRobotCfg.domain_rand):
+        randomize_friction = True
+        friction_range = [0.1, 2.0]
+        randomize_base_mass = True
+        added_mass_range = [-1.5, 4.0]
+        push_robots = True
+        push_interval_s = 5
+        max_push_vel_xy = 1.5
+
     class noise(LeggedRobotCfg.noise):
         add_noise = True
         noise_level = 1.0
         class noise_scales(LeggedRobotCfg.noise.noise_scales):
             dof_pos = 0.01
-            dof_vel = 0.5       # REDUCED from 1.5
+            dof_vel = 0.5       
             lin_vel = 0.1
             ang_vel = 0.2
             gravity = 0.05
@@ -98,25 +115,22 @@ class GO2DepthCfg(LeggedRobotCfg):
             feet_stumble = -0.2
             feet_drag = -0.05
 
-class GO2DepthCfgPPO(LeggedRobotCfgPPO):
+class GO2ObsAvoidDepthCfgPPO(LeggedRobotCfgPPO):
     class policy(LeggedRobotCfgPPO.policy):
         init_noise_std = 1.0
         actor_hidden_dims = [512, 256, 128]
         critic_hidden_dims = [512, 256, 128]
         activation = 'elu'
-        
+
     class algorithm(LeggedRobotCfgPPO.algorithm):
         entropy_coef = 0.01
-        # Fixed learning rate for stability  
+        # Fixed learning rate for stability
         schedule = 'fixed'
         learning_rate = 7e-4
-        
-        # num_mini_batches = 3
-        # num_learning_epochs = 8
-        
+
     class runner(LeggedRobotCfgPPO.runner):
         run_name = ''
-        experiment_name = 'depth_go2'
+        experiment_name = 'obsavoid_depth_go2'
         policy_class_name = 'VisualActorCritic'
         algorithm_class_name = 'PPO'
         save_interval = 1000

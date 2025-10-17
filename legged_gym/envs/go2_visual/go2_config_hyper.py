@@ -2,7 +2,7 @@ from legged_gym.envs.base.legged_robot_config import LeggedRobotCfg, LeggedRobot
 
 class GO2HyperCfg(LeggedRobotCfg):
     class env(LeggedRobotCfg.env):
-        num_envs = 512
+        num_envs = 1024
         num_observations = 48 + 84*84  # 48 state + 7056 depth = 7104 total
         
     class init_state(LeggedRobotCfg.init_state):
@@ -33,8 +33,8 @@ class GO2HyperCfg(LeggedRobotCfg):
         file = '{LEGGED_GYM_ROOT_DIR}/resources/robots/go2/urdf/go2.urdf'
         name = "go2_hyper"
         foot_name = "foot"
-        penalize_contacts_on = ["thigh", "calf","body"]
-        terminate_after_contacts_on = []  # Removed early termination to ensure full episodes
+        penalize_contacts_on = ["thigh", "calf"]
+        terminate_after_contacts_on = ["base"]  
         self_collisions = 1
 
     class terrain(LeggedRobotCfg.terrain):
@@ -44,7 +44,7 @@ class GO2HyperCfg(LeggedRobotCfg):
 
     class depth:
         use_camera = True
-        camera_num_envs = 512
+        camera_num_envs = 1024
         position = [0.05, 0, 0.02]
         position_rand = 0.01
         angle = [0, 0]
@@ -61,6 +61,7 @@ class GO2HyperCfg(LeggedRobotCfg):
     class rewards(LeggedRobotCfg.rewards):
         soft_dof_pos_limit = 0.9
         base_height_target = 0.25
+        # only_positive_rewards = False
         class scales(LeggedRobotCfg.rewards.scales):
             torques = -0.0002
             dof_pos_limits = -10.0
@@ -88,6 +89,7 @@ class GO2HyperCfgPPO(LeggedRobotCfgPPO):
         experiment_name = 'hyper_go2'
         policy_class_name = 'HyperPPOActorCritic'
         algorithm_class_name = 'HyperPPO'
-        max_iterations = 10000
+        max_iterations = 100000
+        save_interval = 10000
 
   
