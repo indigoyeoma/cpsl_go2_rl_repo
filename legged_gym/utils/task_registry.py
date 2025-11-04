@@ -116,6 +116,11 @@ class TaskRegistry():
             log_dir = os.path.join(log_root, datetime.now().strftime('%b%d_%H-%M-%S') + '_' + train_cfg.runner.run_name)
         
         train_cfg_dict = class_to_dict(train_cfg)
+        # Wire CLI distill flag into runner config for downstream use
+        try:
+            train_cfg_dict['runner']['distill'] = bool(getattr(args, 'distill', False))
+        except Exception:
+            pass
         
         # Use HyperOnPolicyRunner for HyperPPO, standard OnPolicyRunner for others
         algorithm_class_name = train_cfg_dict['runner']['algorithm_class_name']
@@ -126,14 +131,37 @@ class TaskRegistry():
             runner = HyperOnPolicyRunner(env, train_cfg_dict, log_dir, device=args.rl_device)
         else:
             print("Using standard OnPolicyRunner")
+            # Pass args through so runner can optionally use teacher/student logic
             runner = OnPolicyRunner(env, train_cfg_dict, log_dir, device=args.rl_device)
         #save resume path before creating a new log_dir
+        teacher_path = None
+        if bool(getattr(args, 'distill', False)) and hasattr(runner, 'load_teacher'):
+            teacher_experiment = getattr(args, 'teacher_experiment', None)
+            if teacher_experiment:
+                teacher_root = os.path.join(LEGGED_GYM_ROOT_DIR, 'logs', teacher_experiment)
+                if not os.path.isdir(teacher_root):
+                    raise ValueError(f"Teacher experiment directory not found: {teacher_root}")
+                teacher_run = getattr(args, 'teacher_run', -1)
+                teacher_checkpoint = getattr(args, 'teacher_checkpoint', -1)
+                teacher_path = get_load_path(
+                    teacher_root,
+                    load_run=teacher_run,
+                    checkpoint=teacher_checkpoint,
+                )
+
         resume = train_cfg.runner.resume
         if resume:
-            # load previously trained model
-            resume_path = get_load_path(log_root, load_run=train_cfg.runner.load_run, checkpoint=train_cfg.runner.checkpoint)
+            resume_path = get_load_path(
+                log_root,
+                load_run=train_cfg.runner.load_run,
+                checkpoint=train_cfg.runner.checkpoint,
+            )
             print(f"Loading model from: {resume_path}")
             runner.load(resume_path)
+
+        if teacher_path is not None:
+            print(f"Loading teacher model from: {teacher_path}")
+            runner.load_teacher(teacher_path)
         return runner, train_cfg
 
 # make global task registry

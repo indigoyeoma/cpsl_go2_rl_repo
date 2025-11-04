@@ -1,130 +1,71 @@
-from legged_gym import LEGGED_GYM_ROOT_DIR
 import os
+import sys
 
-os.environ['MESA_VK_DEVICE_SELECT'] = '10de:2231w'
-os.environ["CUDA_VISIBLE_DEVICES"] = '0'
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+PACKAGE_ROOT = os.path.dirname(SCRIPT_DIR)
+REPO_ROOT = os.path.dirname(PACKAGE_ROOT)
+for path in (REPO_ROOT, PACKAGE_ROOT):
+    if path not in sys.path:
+        sys.path.insert(0, path)
 
-import isaacgym
+ISAAC_GYM_PYTHON = os.path.join(REPO_ROOT, "isaacgym", "python")
+if ISAAC_GYM_PYTHON not in sys.path:
+    sys.path.insert(0, ISAAC_GYM_PYTHON)
+
+from legged_gym import LEGGED_GYM_ROOT_DIR
 from legged_gym.envs import *
-from legged_gym.utils import get_args, export_policy_as_jit, task_registry, Logger
-import numpy as np
+from legged_gym.utils import get_args, export_policy_as_jit, task_registry
 import torch
-import json
-import random
 from legged_gym.utils import webviewer
 
+
 def play(args):
+    web = None
     if args.web:
-        web_viewer = webviewer.WebViewer()
-    
+        web = webviewer.WebViewer()
+
+    depth_tasks = {"depth_go2", "depth_obsavoid_go2"}
+    if args.task in depth_tasks:
+        raise RuntimeError(
+            "Depth-based tasks are handled by play_depth.py. "
+            "Run `python legged_gym/scripts/play_depth.py --task=depth_obsavoid_go2` instead."
+        )
+
     env_cfg, train_cfg = task_registry.get_cfgs(name=args.task)
-    # override some parameters for testing
-    env_cfg.env.num_envs = min(env_cfg.env.num_envs, 10)
-    env_cfg.terrain.num_rows = 3  # Reduce to 3x3 grid for closer spacing
-    env_cfg.terrain.num_cols = 3
-    
-    # Force smaller terrain spacing to bring robots closer together
-    if hasattr(env_cfg.terrain, 'terrain_length'):
-        env_cfg.terrain.terrain_length = 2.0  # Reduce from default (usually 8m) to 2m
-        env_cfg.terrain.terrain_width = 2.0   # Reduce from default (usually 8m) to 2m
-    
-    # Also try setting environment spacing directly
-    if hasattr(env_cfg, 'env_spacing'):
-        env_cfg.env_spacing = 2.0  # Set environment spacing to 2m
-    if hasattr(env_cfg.env, 'env_spacing'):
-        env_cfg.env.env_spacing = 2.0  # Alternative location for env spacing
-    env_cfg.terrain.curriculum = False
-    env_cfg.noise.add_noise = False
-    env_cfg.domain_rand.randomize_friction = False
-    env_cfg.domain_rand.push_robots = False
-    
-    # Increase camera range and FOV to see other robots better
-    if hasattr(env_cfg, 'depth'):
-        env_cfg.depth.far_clip = 15.0  # Increase from 3.0m to 15.0m  
-        env_cfg.depth.horizontal_fov = 120  # Increase from 87° to 120° (wider view)
-        env_cfg.depth.angle = [-0.3, 0]  # Tilt camera downward to see other robots on ground
-    
-    # prepare environment
+    target_envs = getattr(args, "num_envs", None)
+    env_cfg.env.num_envs = min(env_cfg.env.num_envs, target_envs or 1)
+
     env, _ = task_registry.make_env(name=args.task, args=args, env_cfg=env_cfg)
     obs = env.get_observations()
 
-    # Enable camera display for depth_go2 task in play mode
-    if args.task == "depth_go2" and hasattr(env, 'enable_camera_display'):
-        # Print environment positions for debugging
-        print(f"Number of environments: {env.num_envs}")
-        print(f"Terrain size: {env_cfg.terrain.num_rows}x{env_cfg.terrain.num_cols}")
-        print(f"Camera FOV: {env_cfg.depth.horizontal_fov} degrees")
-        print(f"Camera range: {env_cfg.depth.near_clip}m - {env_cfg.depth.far_clip}m")
-        if hasattr(env.cfg.terrain, 'terrain_length'):
-            print(f"Terrain spacing: {env.cfg.terrain.terrain_length}m x {env.cfg.terrain.terrain_width}m")
-            
-        # Print actual robot positions for debugging
-        print("Robot base positions:")
-        for i in range(min(5, env.num_envs)):  # Show first 5 robots
-            pos = env.root_states[i, :3].cpu().numpy()
-            print(f"  Robot {i}: x={pos[0]:.2f}, y={pos[1]:.2f}, z={pos[2]:.2f}")
-        
-        env.enable_camera_display(show_all=True)  # Show all 10 cameras simultaneously
-        print("Live camera feed enabled for play mode!")
+    if web is not None:
+        web.setup(env)
 
-    if args.web:
-        web_viewer.setup(env)
-    
-    # load policy
     train_cfg.runner.resume = True
+    train_cfg.runner.load_run = getattr(args, "load_run", -1) if getattr(args, "load_run", None) is not None else -1
+    train_cfg.runner.checkpoint = getattr(args, "checkpoint", -1) if getattr(args, "checkpoint", None) is not None else -1
     ppo_runner, train_cfg = task_registry.make_alg_runner(env=env, name=args.task, args=args, train_cfg=train_cfg)
     policy = ppo_runner.get_inference_policy(device=env.device)
-    
-    # Load estimator
-    # estimator = ppo_runner.get_estimator_inference_policy(device=env.device)
-    
-    # export policy as a jit module (used to run it from C++)
-    if EXPORT_POLICY:
-        path = os.path.join(LEGGED_GYM_ROOT_DIR, 'logs', train_cfg.runner.experiment_name, 'exported', 'policies')
-        export_policy_as_jit(ppo_runner.alg.actor_critic, path)
-        print('Exported policy as jit script to: ', path)
 
-    actions = torch.zeros(env.num_envs, 12, device=env.device, requires_grad=False)
-    
-    # Override command resampling to use fixed forward command
-    def fixed_resample_commands(self, env_ids):
-        """Fixed forward walking command"""
-        self.commands[env_ids, 0] = 0.6  # lin_vel_x = 0.6 m/s forward 
-        self.commands[env_ids, 1] = torch.rand(len(env_ids), device=env.device) * 0.2 - 0.1  # lin_vel_y = small random [-0.1, 0.1]
-        self.commands[env_ids, 2] = 0.0  # ang_vel_yaw = 0.0 rad/s
-        
-    env._resample_commands = fixed_resample_commands.__get__(env, env.__class__)
-    
-    # Set initial forward command
-    env.commands[:, 0] = 0.6  # Forward 0.6 m/s 
-    env.commands[:, 1] = torch.rand(env.num_envs, device=env.device) * 0.2 - 0.1  # Small random sideways [-0.1, 0.1]
-    env.commands[:, 2] = 0.0  # No turning
+    export_dir = os.path.join(LEGGED_GYM_ROOT_DIR, "logs", train_cfg.runner.experiment_name, "exported", "policies")
+    export_policy_as_jit(ppo_runner.alg.actor_critic, export_dir)
+    print("=" * 60)
+    print("Exported policy as jit script to:", export_dir)
+    print("=" * 60)
 
-    for i in range(10*int(env.max_episode_length)):
-        # For VisualActorCritic, pass single depth frame
-        if train_cfg.runner.policy_class_name == "VisualActorCritic":
-            depth_images = env.depth_image if hasattr(env, 'depth_image') else None
-            actions = policy(obs.detach(), depth_images=depth_images)
-        else:
-            # For other policies, use the original approach
-            actions = policy(obs.detach())
-            
-        obs, _, rews, dones, infos = env.step(actions.detach())
-        
-        if args.web:
-            web_viewer.render(fetch_results=True,
-                        step_graphics=True,
-                        render_all_camera_sensors=True,
-                        wait_for_page_load=True)
+    total_steps = 10 * int(env.max_episode_length)
+    for _ in range(total_steps):
+        actions = policy(obs.detach())
+        obs, _, _, _, _ = env.step(actions.detach())
+        if web is not None:
+            web.render(
+                fetch_results=True,
+                step_graphics=True,
+                render_all_camera_sensors=True,
+                wait_for_page_load=True,
+            )
 
-    # Cleanup camera display
-    if args.task == "depth_go2" and hasattr(env, 'disable_camera_display'):
-        env.disable_camera_display()
-        print("Camera display closed.")
 
-if __name__ == '__main__':
-    EXPORT_POLICY = True
-    RECORD_FRAMES = False
-    MOVE_CAMERA = False
+if __name__ == "__main__":
     args = get_args()
     play(args)

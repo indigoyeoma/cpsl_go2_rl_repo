@@ -295,15 +295,45 @@ class LeggedRobot(BaseTask):
         Args:
             env_ids (List[int]): Environments ids for which new commands are needed
         """
-        self.commands[env_ids, 0] = torch_rand_float(self.command_ranges["lin_vel_x"][0], self.command_ranges["lin_vel_x"][1], (len(env_ids), 1), device=self.device).squeeze(1)
-        self.commands[env_ids, 1] = torch_rand_float(self.command_ranges["lin_vel_y"][0], self.command_ranges["lin_vel_y"][1], (len(env_ids), 1), device=self.device).squeeze(1)
+        self.commands[env_ids, 0] = torch_rand_float(
+            self.command_ranges["lin_vel_x"][0],
+            self.command_ranges["lin_vel_x"][1],
+            (len(env_ids), 1),
+            device=self.device,
+        ).squeeze(1)
+        self.commands[env_ids, 1] = torch_rand_float(
+            self.command_ranges["lin_vel_y"][0],
+            self.command_ranges["lin_vel_y"][1],
+            (len(env_ids), 1),
+            device=self.device,
+        ).squeeze(1)
         if self.cfg.commands.heading_command:
-            self.commands[env_ids, 3] = torch_rand_float(self.command_ranges["heading"][0], self.command_ranges["heading"][1], (len(env_ids), 1), device=self.device).squeeze(1)
+            self.commands[env_ids, 3] = torch_rand_float(
+                self.command_ranges["heading"][0],
+                self.command_ranges["heading"][1],
+                (len(env_ids), 1),
+                device=self.device,
+            ).squeeze(1)
         else:
-            self.commands[env_ids, 2] = torch_rand_float(self.command_ranges["ang_vel_yaw"][0], self.command_ranges["ang_vel_yaw"][1], (len(env_ids), 1), device=self.device).squeeze(1)
+            self.commands[env_ids, 2] = torch_rand_float(
+                self.command_ranges["ang_vel_yaw"][0],
+                self.command_ranges["ang_vel_yaw"][1],
+                (len(env_ids), 1),
+                device=self.device,
+            ).squeeze(1)
 
-        # set small commands to zero
-        self.commands[env_ids, :2] *= (torch.norm(self.commands[env_ids, :2], dim=1) > 0.2).unsqueeze(1)
+        # set small commands to zero based on config thresholds
+        lin_clip = getattr(self.cfg.commands, "lin_vel_clip", 0.0)
+        if lin_clip > 0.0:
+            lin_norm = torch.norm(self.commands[env_ids, :2], dim=1)
+            keep_mask = (lin_norm > lin_clip).unsqueeze(1)
+            self.commands[env_ids, :2] *= keep_mask
+
+        if not self.cfg.commands.heading_command:
+            ang_clip = getattr(self.cfg.commands, "ang_vel_clip", 0.0)
+            if ang_clip > 0.0:
+                ang_mask = torch.abs(self.commands[env_ids, 2]) > ang_clip
+                self.commands[env_ids, 2] *= ang_mask
 
     def _compute_torques(self, actions):
         """ Compute torques from actions.

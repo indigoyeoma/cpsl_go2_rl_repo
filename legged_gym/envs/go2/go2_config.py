@@ -3,7 +3,7 @@ from legged_gym.envs.base.legged_robot_config import LeggedRobotCfg, LeggedRobot
 class GO2RoughCfg(LeggedRobotCfg):
 
     class env(LeggedRobotCfg.env):
-        num_envs = 4096
+        num_envs = 1024
         num_observations = 48
         num_privileged_obs = None
         num_actions = 12
@@ -69,15 +69,38 @@ class GO2RoughCfg(LeggedRobotCfg):
             gravity = 0.05
             height_measurements = 0.1
 
+    class commands:
+        curriculum = False
+        max_curriculum = 1.
+        num_commands = 4 # default: lin_vel_x, lin_vel_y, ang_vel_yaw, heading (in heading mode ang_vel_yaw is recomputed from heading error)
+        resampling_time = 10. # time before command are changed[s]
+        heading_command = True # if true: compute ang vel command from heading error
+        class ranges:
+            lin_vel_x = [-1.0, 1.0] # min max [m/s]
+            lin_vel_y = [-1.0, 1.0]   # min max [m/s]
+            ang_vel_yaw = [-1, 1]    # min max [rad/s]
+            heading = [-3.14, 3.14]
+
+    # class commands:
+    #     curriculum = False
+    #     max_curriculum = 1.
+    #     num_commands = 4 # default: lin_vel_x, lin_vel_y, ang_vel_yaw, heading (in heading mode ang_vel_yaw is recomputed from heading error)
+    #     resampling_time = 10. # time before command are changed[s]
+    #     heading_command = True # if true: compute ang vel command from heading error
+    #     class ranges:
+    #         lin_vel_x = [0.0, 1.0] # min max [m/s]
+    #         lin_vel_y = [-0.2, 0.2]   # min max [m/s]
+    #         ang_vel_yaw = [-1, 1]    # min max [rad/s]
+    #         heading = [-3.14, 3.14]
+            
     class rewards(LeggedRobotCfg.rewards):
         soft_dof_pos_limit = 0.9
-        base_height_target = 0.27
-        only_positive_rewards = False  # Allow negative rewards
+        base_height_target = 0.35
 
         class scales(LeggedRobotCfg.rewards.scales):
             # Tracking rewards (main positive rewards)
             tracking_lin_vel = 1.0
-            tracking_ang_vel = 0.5
+
 
             # Regularization (keep robot stable)
             lin_vel_z = -0.5
@@ -92,12 +115,13 @@ class GO2RoughCfg(LeggedRobotCfg):
 
             # Joint limits and collisions
             dof_pos_limits = -1.0
-            collision = -0.5
+            collision = -10.0
 
             # Foot contact (encourage natural gait)
             feet_air_time = 0.5
             feet_stumble = -0.2
             feet_drag = -0.05
+            
 
 class GO2RoughCfgPPO(LeggedRobotCfgPPO):
     class algorithm(LeggedRobotCfgPPO.algorithm):
@@ -105,6 +129,6 @@ class GO2RoughCfgPPO(LeggedRobotCfgPPO):
 
     class runner(LeggedRobotCfgPPO.runner):
         run_name = ''
-        experiment_name = 'rough_go2'
+        experiment_name = 'teacher'
         save_interval = 1000
-        max_iterations = 5000
+        max_iterations = 2000

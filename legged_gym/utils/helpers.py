@@ -134,6 +134,12 @@ def get_args():
         {"name": "--num_envs", "type": int, "help": "Number of environments to create. Overrides config file if provided."},
         {"name": "--seed", "type": int, "help": "Random seed. Overrides config file if provided."},
         {"name": "--max_iterations", "type": int, "help": "Maximum number of training iterations. Overrides config file if provided."},
+        {"name": "--distill", "action": "store_true", "default": False, "help": "Enable teacher-student distillation with a state-based teacher."},
+        {"name": "--distill_iterations", "type": int, "help": "Number of training iterations to run in distillation mode before switching to PPO."},
+        {"name": "--num_pretrain_iter", "type": int, "help": "Iterations to execute teacher actions before letting the student act (online distillation warm-up)."},
+        {"name": "--teacher_experiment", "type": str, "help": "Name of the experiment directory that stores the teacher checkpoints."},
+        {"name": "--teacher_run", "type": str, "help": "Run directory inside the teacher experiment to load. Use -1 to select the most recent run."},
+        {"name": "--teacher_checkpoint", "type": int, "help": "Teacher checkpoint index to load. Use -1 to select the last checkpoint."},
         
         {"name": "--web", "action": "store_true", "default": False, "help": "if use web viewer"},
     ]
@@ -147,6 +153,11 @@ def get_args():
     args.sim_device = args.sim_device_type
     if args.sim_device=='cuda':
         args.sim_device += f":{args.sim_device_id}"
+    if hasattr(args, "load_run") and isinstance(args.load_run, str) and args.load_run.strip() == "-1":
+        args.load_run = -1
+    if hasattr(args, "teacher_run") and isinstance(args.teacher_run, str):
+        if args.teacher_run.strip() == "-1":
+            args.teacher_run = -1
     return args
 
 def export_policy_as_jit(actor_critic, path):
