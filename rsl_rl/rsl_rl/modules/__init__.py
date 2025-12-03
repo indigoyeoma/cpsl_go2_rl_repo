@@ -28,7 +28,8 @@
 #
 # Copyright (c) 2021 ETH Zurich, Nikita Rudin
 
-from .actor_critic import ActorCritic
-from .visual_actor_critic import VisualActorCritic
-from .actor_critic_recurrent import ActorCriticRecurrent
-from .hyper_actor_critic import CustomActorCritic, CustomVisualActorCritic, HyperPPOActorCritic, HyperActorWrapper
+from .actor_critic import ActorCriticRMA
+# from .actor_critic_recurrent import ActorCriticRecurrent
+from .estimator import Estimator
+from .estimator import Discriminator, DiscriminatorLSD, DiscriminatorContDIAYN
+from .depth_backbone import *

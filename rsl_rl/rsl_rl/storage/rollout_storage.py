@@ -46,9 +46,6 @@ class RolloutStorage:
             self.action_mean = None
             self.action_sigma = None
             self.hidden_states = None
-            # HyperPPO: Track architecture descriptors with rollout data
-            self.arch_descriptors = None
-        
         def clear(self):
             self.__init__()
 
@@ -62,6 +59,7 @@ class RolloutStorage:
 
         # Core
         self.observations = torch.zeros(num_transitions_per_env, num_envs, *obs_shape, device=self.device)
+
         if privileged_obs_shape[0] is not None:
             self.privileged_observations = torch.zeros(num_transitions_per_env, num_envs, *privileged_obs_shape, device=self.device)
         else:
@@ -77,9 +75,6 @@ class RolloutStorage:
         self.advantages = torch.zeros(num_transitions_per_env, num_envs, 1, device=self.device)
         self.mu = torch.zeros(num_transitions_per_env, num_envs, *actions_shape, device=self.device)
         self.sigma = torch.zeros(num_transitions_per_env, num_envs, *actions_shape, device=self.device)
-        
-        # HyperPPO: Store architecture descriptors for each transition
-        self.arch_descriptors = torch.zeros(num_transitions_per_env, num_envs, 16, device=self.device)  # Fixed descriptor length
 
         self.num_transitions_per_env = num_transitions_per_env
         self.num_envs = num_envs
@@ -102,9 +97,7 @@ class RolloutStorage:
         self.actions_log_prob[self.step].copy_(transition.actions_log_prob.view(-1, 1))
         self.mu[self.step].copy_(transition.action_mean)
         self.sigma[self.step].copy_(transition.action_sigma)
-        # HyperPPO: Store architecture descriptors
-        if transition.arch_descriptors is not None:
-            self.arch_descriptors[self.step].copy_(transition.arch_descriptors)
+
         self._save_hidden_states(transition.hidden_states)
         self.step += 1
 
@@ -158,6 +151,13 @@ class RolloutStorage:
         indices = torch.randperm(num_mini_batches*mini_batch_size, requires_grad=False, device=self.device)
 
         observations = self.observations.flatten(0, 1)
+
+        # # shift the observations by one step to the left to get the next observations
+        # next_disc_observations = torch.cat((self.disc_observations[1:], self.disc_observations[-1].unsqueeze(0)), dim=0)
+        # done_indices = self.dones.nonzero(as_tuple=False).squeeze()
+        # next_disc_observations[done_indices] = self.disc_observations[done_indices]
+        # next_disc_observations = next_disc_observations.flatten(0, 1)
+
         if self.privileged_observations is not None:
             critic_observations = self.privileged_observations.flatten(0, 1)
         else:
@@ -170,8 +170,6 @@ class RolloutStorage:
         advantages = self.advantages.flatten(0, 1)
         old_mu = self.mu.flatten(0, 1)
         old_sigma = self.sigma.flatten(0, 1)
-        # HyperPPO: Flatten architecture descriptors
-        arch_descriptors = self.arch_descriptors.flatten(0, 1)
 
         for epoch in range(num_epochs):
             for i in range(num_mini_batches):
@@ -189,10 +187,10 @@ class RolloutStorage:
                 advantages_batch = advantages[batch_idx]
                 old_mu_batch = old_mu[batch_idx]
                 old_sigma_batch = old_sigma[batch_idx]
-                # HyperPPO: Include architecture descriptors in batch
-                arch_descriptors_batch = arch_descriptors[batch_idx]
+
+                
                 yield obs_batch, critic_observations_batch, actions_batch, target_values_batch, advantages_batch, returns_batch, \
-                       old_actions_log_prob_batch, old_mu_batch, old_sigma_batch, (None, None), arch_descriptors_batch
+                       old_actions_log_prob_batch, old_mu_batch, old_sigma_batch, (None, None), None
 
     # for RNNs only
     def reccurent_mini_batch_generator(self, num_mini_batches, num_epochs=8):
@@ -244,3 +242,4 @@ class RolloutStorage:
                 yield obs_batch, critic_obs_batch, actions_batch, values_batch, advantages_batch, returns_batch, \
                        old_actions_log_prob_batch, old_mu_batch, old_sigma_batch, (hid_a_batch, hid_c_batch), masks_batch
                 
+                first_traj = last_traj

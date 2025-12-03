@@ -1,1 +1,0 @@
-# GO2 environment module

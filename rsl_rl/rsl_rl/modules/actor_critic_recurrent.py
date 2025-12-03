@@ -59,7 +59,8 @@ class ActorCriticRecurrent(ActorCritic):
                          actor_hidden_dims=actor_hidden_dims,
                          critic_hidden_dims=critic_hidden_dims,
                          activation=activation,
-                         init_noise_std=init_noise_std)
+                         init_noise_std=init_noise_std,
+                         **kwargs)
 
         activation = get_activation(activation)
 
@@ -77,8 +78,8 @@ class ActorCriticRecurrent(ActorCritic):
         input_a = self.memory_a(observations, masks, hidden_states)
         return super().act(input_a.squeeze(0))
 
-    def act_inference(self, observations):
-        input_a = self.memory_a(observations)
+    def act_inference(self, observations, **kwargs):
+        input_a = self.memory_a(observations, **kwargs)
         return super().act_inference(input_a.squeeze(0))
 
     def evaluate(self, critic_observations, masks=None, hidden_states=None):
