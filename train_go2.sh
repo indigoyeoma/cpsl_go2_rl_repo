@@ -10,12 +10,6 @@ export MAX_JOBS=$(nproc)
 cd /home/nvidiasims/ws_go2/cpsl_go2_rl_repo/legged_gym/legged_gym/scripts
 
 # Train Go2 on terrain steps
-python train.py \
-    --task go2 \
-    --exptid go2-01-terrain_steps \
-    --device cuda:0 \
-    --num_envs 4096 \
-    --max_iterations 15000 \
-    --proj_name go2_parkour
+python train.py --task go2 --exptid go2_teacher --headless --no_wandb --max_iterations 20002
 
-echo "Training completed! Logs saved in legged_gym/logs/go2_parkour/go2-01-terrain_steps"
+  python train.py --task go2_student --exptid go2_student_001 --load_run ../../logs/parkour_new/go2_teacher_001 --use_camera --headless --no_wandb --max_iterations 15002

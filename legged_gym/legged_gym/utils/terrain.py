@@ -71,9 +71,11 @@ class Terrain:
             self.curiculum()
         elif cfg.selected:
             self.selected_terrain()
-        else:    
-            if hasattr(cfg, "max_difficulty"):
-                self.curiculum(random=True, max_difficulty=cfg.max_difficulty)
+        else:
+            if hasattr(cfg, "max_difficulty") and cfg.max_difficulty:
+                self.curiculum(random=True, max_difficulty=True)
+            elif hasattr(cfg, "easy_difficulty") and cfg.easy_difficulty:
+                self.curiculum(random=True, easy_difficulty=True)
             else:
                 self.curiculum(random=True)
             # self.randomized_terrain()   
@@ -114,7 +116,7 @@ class Terrain:
             terrain = self.make_terrain(choice, difficulty)
             self.add_terrain_to_map(terrain, i, j)
         
-    def curiculum(self, random=False, max_difficulty=False):
+    def curiculum(self, random=False, max_difficulty=False, easy_difficulty=False):
         for j in range(self.cfg.num_cols):
             for i in range(self.cfg.num_rows):
                 difficulty = i / (self.cfg.num_rows-1)
@@ -122,6 +124,8 @@ class Terrain:
                 if random:
                     if max_difficulty:
                         terrain = self.make_terrain(choice, np.random.uniform(0.7, 1))
+                    elif easy_difficulty:
+                        terrain = self.make_terrain(choice, np.random.uniform(0.5, 0.7))
                     else:
                         terrain = self.make_terrain(choice, np.random.uniform(0, 1))
                 else:

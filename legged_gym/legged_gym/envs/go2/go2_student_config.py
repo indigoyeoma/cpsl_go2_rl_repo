@@ -4,12 +4,10 @@
 from legged_gym.envs.base.legged_robot_config import LeggedRobotCfg, LeggedRobotCfgPPO
 
 
-class Go2ParkourCfg( LeggedRobotCfg ):
+class Go2StudentParkourCfg( LeggedRobotCfg ):
     class env( LeggedRobotCfg.env ):
-        num_envs = 4096
-
         # Proprio history for temporal info (gait phase, acceleration, contacts)
-        # Flattened as MLP input (no RNN) - matches extreme-parkour
+        # Flattened as MLP input (no RNN) - matches teacher config
         history_len = 10
         history_encoding = True
 
@@ -73,13 +71,87 @@ class Go2ParkourCfg( LeggedRobotCfg ):
             dof_vel = 0.02    # Joint velocity noise [rad/s] - measured ~0.015
 
             # Base velocity estimation noise - from state estimator
-            lin_vel = 0.0     # Not used for teacher (privileged info)
+            lin_vel = 0.0     # Student doesn't use privileged lin_vel
 
             # Height/terrain perception noise
-            height_measurements = 0.0  # Teacher uses privileged terrain info
+            height_measurements = 0.0  # Student uses depth camera, not height scans
+            forward_depth = 0.0  # Depth has its own noise model below
+
+        # Stereo depth camera noise model (D435i characteristics)
+        class forward_depth:
+            # Stereo matching limitations
+            stereo_min_distance = 0.175  # [m] Below this, stereo matching fails
+            stereo_far_distance = 2.0    # [m] Beyond this, noise increases significantly
+
+            # Depth noise (distance-dependent)
+            stereo_far_noise_std = 0.08   # Noise std for far pixels (>stereo_far_distance)
+            stereo_near_noise_std = 0.02  # Noise std for near pixels
+
+            # Block artifacts (stereo matching failures)
+            stereo_full_block_artifacts_prob = 0.004  # Prob of full block artifacts
+            stereo_full_block_values = [0.0, 0.25, 0.5, 1., 3.]  # Possible artifact values
+            stereo_full_block_height_mean_std = [62, 1.5]  # Block height distribution
+            stereo_full_block_width_mean_std = [3, 0.01]   # Block width distribution
+
+            # Spark artifacts (random bright pixels)
+            stereo_half_block_spark_prob = 0.02
+            stereo_half_block_value = 3000  # Max depth value
+
+            # Sky artifacts (incorrect far readings)
+            sky_artifacts_prob = 0.0001
+            sky_artifacts_far_distance = 2.0  # Pixels beyond this may have sky artifacts
+            sky_artifacts_values = [0.6, 1., 1.2, 1.5, 1.8]
+            sky_artifacts_height_mean_std = [2, 3.2]
+            sky_artifacts_width_mean_std = [2, 3.2]
+
+    class depth( LeggedRobotCfg.depth ):
+        # STUDENT CONFIG: Uses depth camera (D435i)
+        use_camera = True
+
+        # D435i mounted on robot's head
+
+        # Position relative to base_link: [forward, left/right, up]
+        # From official Unitree URDF: front_camera_joint xyz="0.32715 -0.00003 0.04297"
+        position = [0.327, 0.0, 0.043]  # Official Go2 front camera position
+        angle = [-15, 15]  # Pitch angle range (degrees) - positive is down
+
+        # D435i specifications (matching parkour deployment settings)
+        # Native resolution: 640x480 in deployment
+        # Simulation uses smaller resolution for efficiency
+        original = (106, 60)  # Simulation camera resolution (before crop)
+        resized = (87, 58)    # Final output resolution (after crop & resize)
+        horizontal_fov = 87   # D435i horizontal FOV: 87°
+
+        # Cropping settings (matching parkour go2_visual.py ratios)
+        # Parkour uses 640x480 with crop_top=48, crop_left=28, crop_right=36, crop_bottom=0
+        # Proportions: top=10%, left=4.4%, right=5.6%, bottom=0%
+        crop_top = 6      # 60 * 0.10 = 6 (matches parkour 10% top crop)
+        crop_bottom = 0   # No bottom crop (matches parkour)
+        crop_left = 5     # 106 * 0.044 ≈ 5 (matches parkour 4.4% left crop)
+        crop_right = 6    # 106 * 0.056 ≈ 6 (matches parkour 5.6% right crop)
+
+        # D435i depth range: 0.3m (min) to 3m (optimal max)
+        near_clip = 0.3  # D435i minimum depth distance
+        far_clip = 3.0   # D435i maximum reliable depth distance
+
+        # Use only single frame (no temporal buffering)
+        buffer_len = 1  # Single frame, feedforward encoder
+
+        update_interval = 4  # Camera update frequency
+        dis_noise = 0.01  # Depth sensor noise for sim-to-real (applied in env)
+
+        scale = 1
+        invert = True
+
+        # Camera latency simulation (USB2.0 D435i on Go2)
+        # Real-world latency: 250-300ms for USB2.0, 80-140ms for USB3.0
+        latency_range = [0.08, 0.142]  # [s] USB3.0 latency range
+        latency_resampling_time = 5.0  # [s] Resample latency periodically
+        refresh_duration = 0.1  # [s] Camera refresh rate (10 Hz)
 
     class domain_rand( LeggedRobotCfg.domain_rand ):
-        # Domain randomization for robust sim-to-real transfer (TEACHER)
+        # Domain randomization for sim-to-real transfer (STUDENT)
+        # Same as teacher but NO push_robots (distillation should be stable)
         randomize_friction = True
         friction_range = [0.2, 2.0]  # Wide range for robustness
 
@@ -92,10 +164,8 @@ class Go2ParkourCfg( LeggedRobotCfg ):
         randomize_motor = True
         motor_strength_range = [0.8, 1.2]  # Motor strength variation
 
-        # Push robots during training for robustness
-        push_robots = True
-        push_interval_s = 8  # Push every 8 seconds
-        max_push_vel_xy = 0.5  # [m/s] max push velocity
+        # NO push during distillation - student learns from stable teacher demos
+        push_robots = False
 
         # Gravity bias randomization (simulates IMU drift)
         randomize_gravity_bias = True
@@ -105,9 +175,9 @@ class Go2ParkourCfg( LeggedRobotCfg ):
         action_delay = True
         action_delay_range = [0, 2]  # Delay in policy steps (0-2 steps)
 
-    class depth( LeggedRobotCfg.depth ):
-        # TEACHER CONFIG: No depth camera (uses privileged terrain scans)
-        use_camera = False
+        # Proprioception latency (5-45ms typical for Go2)
+        proprioception_latency_range = [0.005, 0.045]  # [s]
+        proprioception_latency_resampling_time = 5.0  # [s]
 
     class terrain( LeggedRobotCfg.terrain ):
         # Train on ALL 5 parkour terrains equally (matches extreme-parkour)
@@ -140,9 +210,19 @@ class Go2ParkourCfg( LeggedRobotCfg ):
         base_height_target = 0.25
 
 
-class Go2ParkourCfgPPO( LeggedRobotCfgPPO ):
+class Go2StudentParkourCfgPPO( LeggedRobotCfgPPO ):
     class algorithm( LeggedRobotCfgPPO.algorithm ):
         entropy_coef = 0.01
+    class depth_encoder( LeggedRobotCfgPPO.depth_encoder ):
+        if_depth = True
+        learning_rate = 1e-3
+        num_steps_per_env = 24
+
     class runner( LeggedRobotCfgPPO.runner ):
         run_name = ''
-        experiment_name = 'go2_teacher'  # Teacher policy (no camera)
+        experiment_name = 'go2_student'
+        # For training: pass --load_run /path/to/teacher to load teacher checkpoint
+        # For playing: will load from logs/go2_student/go2_student automatically
+        resume = True
+        load_run = -1  # Override via --load_run for training
+        checkpoint = -1  # Use latest checkpoint

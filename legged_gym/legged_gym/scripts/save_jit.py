@@ -66,8 +66,8 @@ class HardwareVisionNN(nn.Module):
         return self.actor(obs, hist_encoding=True, eval=False, scandots_latent=depth_latent)
         # return obs, depth_latent
 
-def play(args):    
-    load_run = "../../logs/parkour_new/" + args.exptid
+def play(args):
+    load_run = "../../logs/{}/".format(args.proj_name) + args.exptid
     checkpoint = args.checkpoint
 
     n_priv_explicit = 3 + 3 + 3
@@ -116,6 +116,7 @@ def play(args):
     
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
+    parser.add_argument('--proj_name', type=str, default='go2_student', help='Project name (go2_student, go2_teacher, etc.)')
     parser.add_argument('--exptid', type=str)
     parser.add_argument('--checkpoint', type=int, default=-1)
     parser.add_argument('--tanh', action='store_true')

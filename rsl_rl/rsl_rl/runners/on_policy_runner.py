@@ -33,7 +33,7 @@ import os
 from collections import deque
 import statistics
 
-# from torch.utils.tensorboard import SummaryWriter
+from torch.utils.tensorboard import SummaryWriter
 import torch
 import torch.optim as optim
 import wandb
@@ -74,45 +74,94 @@ class OnPolicyRunner:
                                                       self.env.num_actions,
                                                       **self.policy_cfg).to(self.device)
         estimator = Estimator(input_dim=env.cfg.env.n_proprio, output_dim=env.cfg.env.n_priv, hidden_dims=self.estimator_cfg["hidden_dims"]).to(self.device)
-        # Depth encoder
+        # Depth encoder (depth_encoder + depth_actor architecture)
         self.if_depth = self.depth_encoder_cfg["if_depth"]
         if self.if_depth:
-            depth_backbone = DepthOnlyFCBackbone58x87(env.cfg.env.n_proprio, 
-                                                    self.policy_cfg["scan_encoder_dims"][-1], 
-                                                    self.depth_encoder_cfg["hidden_dims"],
-                                                    )
-            depth_encoder = RecurrentDepthBackbone(depth_backbone, env.cfg).to(self.device)
+            # Check if using GHN-sampled backbone
+            use_ghn = self.depth_encoder_cfg.get("use_ghn_encoder", False)
+
+            if use_ghn:
+                print("Using GHN-sampled CNN backbone")
+                from rsl_rl.ghn2 import DepthEncoderConfig, DepthEncoder
+                from rsl_rl.ghn2 import BASELINE_CONFIG, DEEP_CONFIG, WIDE_CONFIG, LIGHT_CONFIG
+                from rsl_rl.ghn2 import sample_config
+
+                # Get GHN config
+                ghn_preset = self.depth_encoder_cfg.get("ghn_preset", None)
+                ghn_config_dict = self.depth_encoder_cfg.get("ghn_config", None)
+                input_shape = self.depth_encoder_cfg.get("input_shape", (58, 87))
+                latent_dim = self.depth_encoder_cfg.get("latent_dim", self.policy_cfg["scan_encoder_dims"][-1])
+
+                if ghn_preset == 'baseline':
+                    ghn_config = BASELINE_CONFIG
+                elif ghn_preset == 'deep':
+                    ghn_config = DEEP_CONFIG
+                elif ghn_preset == 'wide':
+                    ghn_config = WIDE_CONFIG
+                elif ghn_preset == 'light':
+                    ghn_config = LIGHT_CONFIG
+                elif ghn_preset == 'random':
+                    ghn_config = sample_config()
+                    print(f"Sampled random config: {ghn_config}")
+                elif ghn_config_dict is not None:
+                    ghn_config = DepthEncoderConfig(**ghn_config_dict)
+                else:
+                    ghn_config = BASELINE_CONFIG
+
+                # Build GHN backbone (replaces DepthOnlyFCBackbone58x87)
+                # depth [58,87] -> GHN CNN -> [32]
+                depth_backbone = DepthEncoder(
+                    ghn_config,
+                    input_shape=input_shape,
+                    latent_dim=latent_dim,
+                )
+                print(f"GHN Backbone: {depth_backbone.count_parameters():,} params")
+                print(f"  Config: {ghn_config}")
+            else:
+                print("Using DepthOnlyFCBackbone58x87")
+                depth_backbone = DepthOnlyFCBackbone58x87(
+                    env.cfg.env.n_proprio,
+                    self.policy_cfg["scan_encoder_dims"][-1],
+                    self.depth_encoder_cfg["hidden_dims"],
+                )
+
+            # Wrap backbone with SimpleDepthEncoder (adds proprio fusion + yaw prediction)
+            depth_encoder = SimpleDepthEncoder(depth_backbone, env.cfg).to(self.device)
             depth_actor = deepcopy(actor_critic.actor)
         else:
             depth_encoder = None
             depth_actor = None
-        # self.depth_encoder = depth_encoder
-        # self.depth_encoder_optimizer = optim.Adam(self.depth_encoder.parameters(), lr=self.depth_encoder_cfg["learning_rate"])
-        # self.depth_encoder_paras = self.depth_encoder_cfg
-        # self.depth_encoder_criterion = nn.MSELoss()
+
         # Create algorithm
         alg_class = eval(self.cfg["algorithm_class_name"]) # PPO
-        self.alg: PPO = alg_class(actor_critic, 
-                                  estimator, self.estimator_cfg, 
+        self.alg: PPO = alg_class(actor_critic,
+                                  estimator, self.estimator_cfg,
                                   depth_encoder, self.depth_encoder_cfg, depth_actor,
                                   device=self.device, **self.alg_cfg)
+
         self.num_steps_per_env = self.cfg["num_steps_per_env"]
         self.save_interval = self.cfg["save_interval"]
         self.dagger_update_freq = self.alg_cfg["dagger_update_freq"]
 
         self.alg.init_storage(
-            self.env.num_envs, 
-            self.num_steps_per_env, 
-            [self.env.num_obs], 
-            [self.env.num_privileged_obs], 
+            self.env.num_envs,
+            self.num_steps_per_env,
+            [self.env.num_obs],
+            [self.env.num_privileged_obs],
             [self.env.num_actions],
         )
 
-        self.learn = self.learn_RL if not self.if_depth else self.learn_vision
+        # Select learning method based on configuration
+        if not self.if_depth:
+            self.learn = self.learn_RL
+        else:
+            self.learn = self.learn_vision
             
         # Log
         self.log_dir = log_dir
         self.writer = None
+        if self.log_dir is not None:
+            self.writer = SummaryWriter(log_dir=self.log_dir, flush_secs=10)
         self.tot_timesteps = 0
         self.tot_time = 0
         self.current_learning_iteration = 0
@@ -196,23 +245,18 @@ class OnPolicyRunner:
                 self.alg.compute_returns(critic_obs)
             
             mean_value_loss, mean_surrogate_loss, mean_estimator_loss, mean_disc_loss, mean_disc_acc, mean_priv_reg_loss, priv_reg_coef = self.alg.update()
-            if hist_encoding:
-                print("Updating dagger...")
-                mean_hist_latent_loss = self.alg.update_dagger()
+            # DISABLED - no history encoder, no dagger
+            # if hist_encoding:
+            #     print("Updating dagger...")
+            #     mean_hist_latent_loss = self.alg.update_dagger()
             
             stop = time.time()
             learn_time = stop - start
             if self.log_dir is not None:
                 self.log(locals())
-            if it < 2500:
-                if it % self.save_interval == 0:
-                    self.save(os.path.join(self.log_dir, 'model_{}.pt'.format(it)))
-            elif it < 5000:
-                if it % (2*self.save_interval) == 0:
-                    self.save(os.path.join(self.log_dir, 'model_{}.pt'.format(it)))
-            else:
-                if it % (5*self.save_interval) == 0:
-                    self.save(os.path.join(self.log_dir, 'model_{}.pt'.format(it)))
+            # Save every save_interval iterations
+            if it % self.save_interval == 0:
+                self.save(os.path.join(self.log_dir, 'model_{}.pt'.format(it)))
             ep_infos.clear()
         
         # self.current_learning_iteration += num_learning_iterations
@@ -235,7 +279,6 @@ class OnPolicyRunner:
         self.alg.depth_encoder.train()
         self.alg.depth_actor.train()
 
-        num_pretrain_iter = 0
         for it in range(self.current_learning_iteration, tot_iter):
             start = time.time()
             depth_latent_buffer = []
@@ -272,11 +315,8 @@ class OnPolicyRunner:
                 actions_student = self.alg.depth_actor(obs_student, hist_encoding=True, scandots_latent=depth_latent)
                 actions_student_buffer.append(actions_student)
 
-                # detach actions before feeding the env
-                if it < num_pretrain_iter:
-                    obs, privileged_obs, rewards, dones, infos = self.env.step(actions_teacher.detach())  # obs has changed to next_obs !! if done obs has been reset
-                else:
-                    obs, privileged_obs, rewards, dones, infos = self.env.step(actions_student.detach())  # obs has changed to next_obs !! if done obs has been reset
+                # Student executes its own actions (DAgger)
+                obs, privileged_obs, rewards, dones, infos = self.env.step(actions_student.detach())
                 critic_obs = privileged_obs if privileged_obs is not None else obs
                 obs, critic_obs, rewards, dones = obs.to(self.device), critic_obs.to(self.device), rewards.to(self.device), dones.to(self.device)
 
@@ -316,12 +356,11 @@ class OnPolicyRunner:
 
             if self.log_dir is not None:
                 self.log_vision(locals())
-            if (it-self.start_learning_iteration < 2500 and it % self.save_interval == 0) or \
-               (it-self.start_learning_iteration < 5000 and it % (2*self.save_interval) == 0) or \
-               (it-self.start_learning_iteration >= 5000 and it % (5*self.save_interval) == 0):
-                    self.save(os.path.join(self.log_dir, 'model_{}.pt'.format(it)))
+            # Save every save_interval iterations
+            if it % self.save_interval == 0:
+                self.save(os.path.join(self.log_dir, 'model_{}.pt'.format(it)))
             ep_infos.clear()
-    
+
     def log_vision(self, locs, width=80, pad=35):
         self.tot_timesteps += self.num_steps_per_env * self.env.num_envs
         self.tot_time += locs['collection_time'] + locs['learn_time']
@@ -548,7 +587,7 @@ class OnPolicyRunner:
         if device is not None:
             self.alg.depth_encoder.to(device)
         return self.alg.depth_encoder
-    
+
     def get_disc_inference_policy(self, device=None):
         self.alg.discriminator.eval() # switch to evaluation mode (dropout for example)
         if device is not None:

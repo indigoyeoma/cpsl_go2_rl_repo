@@ -150,7 +150,8 @@ class LeggedRobot(BaseTask):
             self.privileged_obs_buf = torch.clip(self.privileged_obs_buf, -clip_obs, clip_obs)
         self.extras["delta_yaw_ok"] = self.delta_yaw < 0.6
         if self.cfg.depth.use_camera and self.global_counter % self.cfg.depth.update_interval == 0:
-            self.extras["depth"] = self.depth_buffer[:, -2]  # have already selected last one
+            # self.extras["depth"] = self.depth_buffer[:, -2]  # have already selected last one
+            self.extras["depth"] = self.depth_buffer[:, -1]  # use latest depth buffer
         else:
             self.extras["depth"] = None
         return self.obs_buf, self.privileged_obs_buf, self.rew_buf, self.reset_buf, self.extras
@@ -173,8 +174,36 @@ class LeggedRobot(BaseTask):
         return depth_image
 
     def crop_depth_image(self, depth_image):
-        # crop 30 pixels from the left and right and and 20 pixels from bottom and return croped image
-        return depth_image[:-2, 4:-4]
+        # Crop depth image using configurable parameters from config
+        # Matches deployment cropping (parkour: crop_top=48, crop_bottom=0, crop_left=28, crop_right=36)
+        # Simulation uses proportionally smaller crops for its smaller resolution
+        top = getattr(self.cfg.depth, 'crop_top', 0)
+        bottom = getattr(self.cfg.depth, 'crop_bottom', 0)
+        left = getattr(self.cfg.depth, 'crop_left', 0)
+        right = getattr(self.cfg.depth, 'crop_right', 0)
+
+        # Apply crops (handle edge cases where crop is 0)
+        top_idx = top if top > 0 else None
+        bottom_idx = -bottom if bottom > 0 else None
+        left_idx = left if left > 0 else None
+        right_idx = -right if right > 0 else None
+
+        # Slice the image
+        if top_idx is None and bottom_idx is None:
+            row_slice = slice(None)
+        elif bottom_idx is None:
+            row_slice = slice(top_idx, None)
+        else:
+            row_slice = slice(top_idx, bottom_idx)
+
+        if left_idx is None and right_idx is None:
+            col_slice = slice(None)
+        elif right_idx is None:
+            col_slice = slice(left_idx, None)
+        else:
+            col_slice = slice(left_idx, right_idx)
+
+        return depth_image[row_slice, col_slice]
 
     def update_depth_buffer(self):
         if not self.cfg.depth.use_camera:
@@ -338,7 +367,8 @@ class LeggedRobot(BaseTask):
         self.last_root_vel[:] = 0.
         self.feet_air_time[env_ids] = 0.
         self.reset_buf[env_ids] = 1
-        self.obs_history_buf[env_ids, :, :] = 0.  # reset obs history buffer TODO no 0s
+        if self.cfg.env.history_len > 0:
+            self.obs_history_buf[env_ids, :, :] = 0.  # reset obs history buffer
         self.contact_buf[env_ids, :, :] = 0.
         self.action_history_buf[env_ids, :, :] = 0.
         self.cur_goal_idx[env_ids] = 0
@@ -414,18 +444,29 @@ class LeggedRobot(BaseTask):
         ), dim=-1)
         if self.cfg.terrain.measure_heights:
             heights = torch.clip(self.root_states[:, 2].unsqueeze(1) - 0.3 - self.measured_heights, -1, 1.)
-            self.obs_buf = torch.cat([obs_buf, heights, priv_explicit, priv_latent, self.obs_history_buf.view(self.num_envs, -1)], dim=-1)
+            if self.cfg.env.history_len > 0:
+                self.obs_buf = torch.cat([obs_buf, heights, priv_explicit, priv_latent, self.obs_history_buf.view(self.num_envs, -1)], dim=-1)
+            else:
+                # No history - single frame observation
+                self.obs_buf = torch.cat([obs_buf, heights, priv_explicit, priv_latent], dim=-1)
         else:
-            self.obs_buf = torch.cat([obs_buf, priv_explicit, priv_latent, self.obs_history_buf.view(self.num_envs, -1)], dim=-1)
-        obs_buf[:, 6:8] = 0  # mask yaw in proprioceptive history
-        self.obs_history_buf = torch.where(
-            (self.episode_length_buf <= 1)[:, None, None], 
-            torch.stack([obs_buf] * self.cfg.env.history_len, dim=1),
-            torch.cat([
-                self.obs_history_buf[:, 1:],
-                obs_buf.unsqueeze(1)
-            ], dim=1)
-        )
+            if self.cfg.env.history_len > 0:
+                self.obs_buf = torch.cat([obs_buf, priv_explicit, priv_latent, self.obs_history_buf.view(self.num_envs, -1)], dim=-1)
+            else:
+                # No history - single frame observation
+                self.obs_buf = torch.cat([obs_buf, priv_explicit, priv_latent], dim=-1)
+
+        # Only update history buffer if history_len > 0
+        if self.cfg.env.history_len > 0:
+            obs_buf[:, 6:8] = 0  # mask yaw in proprioceptive history
+            self.obs_history_buf = torch.where(
+                (self.episode_length_buf <= 1)[:, None, None],
+                torch.stack([obs_buf] * self.cfg.env.history_len, dim=1),
+                torch.cat([
+                    self.obs_history_buf[:, 1:],
+                    obs_buf.unsqueeze(1)
+                ], dim=1)
+            )
 
         self.contact_buf = torch.where(
             (self.episode_length_buf <= 1)[:, None, None], 

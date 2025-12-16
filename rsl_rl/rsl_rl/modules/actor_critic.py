@@ -120,7 +120,9 @@ class Actor(nn.Module):
             self.priv_encoder = nn.Identity()
             priv_encoder_output_dim = num_priv_latent
 
-        self.history_encoder = StateHistoryEncoder(activation, num_prop, num_hist, priv_encoder_output_dim)
+        # DISABLED - no history encoder (single frame only)
+        # self.history_encoder = StateHistoryEncoder(activation, num_prop, num_hist, priv_encoder_output_dim)
+        self.history_encoder = None
 
         if self.if_scan_encode:
             scan_encoder = []
@@ -157,50 +159,30 @@ class Actor(nn.Module):
         self.actor_backbone = nn.Sequential(*actor_layers)
 
     def forward(self, obs, hist_encoding: bool, eval=False, scandots_latent=None):
-        if not eval:
-            if self.if_scan_encode:
-                obs_scan = obs[:, self.num_prop:self.num_prop + self.num_scan]
-                if scandots_latent is None:
-                    scan_latent = self.scan_encoder(obs_scan)   
-                else:
-                    scan_latent = scandots_latent
-                obs_prop_scan = torch.cat([obs[:, :self.num_prop], scan_latent], dim=1)
+        # hist_encoding ignored - always use priv_encoder (no history)
+        if self.if_scan_encode:
+            obs_scan = obs[:, self.num_prop:self.num_prop + self.num_scan]
+            if scandots_latent is None:
+                scan_latent = self.scan_encoder(obs_scan)
             else:
-                obs_prop_scan = obs[:, :self.num_prop + self.num_scan]
-            obs_priv_explicit = obs[:, self.num_prop + self.num_scan:self.num_prop + self.num_scan + self.num_priv_explicit]
-            if hist_encoding:
-                latent = self.infer_hist_latent(obs)
-            else:
-                latent = self.infer_priv_latent(obs)
-            backbone_input = torch.cat([obs_prop_scan, obs_priv_explicit, latent], dim=1)
-            backbone_output = self.actor_backbone(backbone_input)
-            return backbone_output
+                scan_latent = scandots_latent
+            obs_prop_scan = torch.cat([obs[:, :self.num_prop], scan_latent], dim=1)
         else:
-            if self.if_scan_encode:
-                obs_scan = obs[:, self.num_prop:self.num_prop + self.num_scan]
-                if scandots_latent is None:
-                    scan_latent = self.scan_encoder(obs_scan)   
-                else:
-                    scan_latent = scandots_latent
-                obs_prop_scan = torch.cat([obs[:, :self.num_prop], scan_latent], dim=1)
-            else:
-                obs_prop_scan = obs[:, :self.num_prop + self.num_scan]
-            obs_priv_explicit = obs[:, self.num_prop + self.num_scan:self.num_prop + self.num_scan + self.num_priv_explicit]
-            if hist_encoding:
-                latent = self.infer_hist_latent(obs)
-            else:
-                latent = self.infer_priv_latent(obs)
-            backbone_input = torch.cat([obs_prop_scan, obs_priv_explicit, latent], dim=1)
-            backbone_output = self.actor_backbone(backbone_input)
-            return backbone_output
+            obs_prop_scan = obs[:, :self.num_prop + self.num_scan]
+        obs_priv_explicit = obs[:, self.num_prop + self.num_scan:self.num_prop + self.num_scan + self.num_priv_explicit]
+        latent = self.infer_priv_latent(obs)
+        backbone_input = torch.cat([obs_prop_scan, obs_priv_explicit, latent], dim=1)
+        backbone_output = self.actor_backbone(backbone_input)
+        return backbone_output
     
     def infer_priv_latent(self, obs):
         priv = obs[:, self.num_prop + self.num_scan + self.num_priv_explicit: self.num_prop + self.num_scan + self.num_priv_explicit + self.num_priv_latent]
         return self.priv_encoder(priv)
     
-    def infer_hist_latent(self, obs):
-        hist = obs[:, -self.num_hist*self.num_prop:]
-        return self.history_encoder(hist.view(-1, self.num_hist, self.num_prop))
+    # DISABLED - no history encoder
+    # def infer_hist_latent(self, obs):
+    #     hist = obs[:, -self.num_hist*self.num_prop:]
+    #     return self.history_encoder(hist.view(-1, self.num_hist, self.num_prop))
     
     def infer_scandots_latent(self, obs):
         scan = obs[:, self.num_prop:self.num_prop + self.num_scan]

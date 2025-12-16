@@ -108,8 +108,8 @@ class PPO:
         self.max_grad_norm = max_grad_norm
         self.use_clipped_value_loss = use_clipped_value_loss
 
-        # Adaptation
-        self.hist_encoder_optimizer = optim.Adam(self.actor_critic.actor.history_encoder.parameters(), lr=learning_rate)
+        # Adaptation - DISABLED (no history encoder)
+        # self.hist_encoder_optimizer = optim.Adam(self.actor_critic.actor.history_encoder.parameters(), lr=learning_rate)
         self.priv_reg_coef_schedual = priv_reg_coef_schedual
         self.counter = 0
 
@@ -203,13 +203,15 @@ class PPO:
                 sigma_batch = self.actor_critic.action_std
                 entropy_batch = self.actor_critic.entropy
                 
-                # Adaptation module update
-                priv_latent_batch = self.actor_critic.actor.infer_priv_latent(obs_batch)
-                with torch.inference_mode():
-                    hist_latent_batch = self.actor_critic.actor.infer_hist_latent(obs_batch)
-                priv_reg_loss = (priv_latent_batch - hist_latent_batch.detach()).norm(p=2, dim=1).mean()
-                priv_reg_stage = min(max((self.counter - self.priv_reg_coef_schedual[2]), 0) / self.priv_reg_coef_schedual[3], 1)
-                priv_reg_coef = priv_reg_stage * (self.priv_reg_coef_schedual[1] - self.priv_reg_coef_schedual[0]) + self.priv_reg_coef_schedual[0]
+                # Adaptation module update - DISABLED (no history encoder)
+                # priv_latent_batch = self.actor_critic.actor.infer_priv_latent(obs_batch)
+                # with torch.inference_mode():
+                #     hist_latent_batch = self.actor_critic.actor.infer_hist_latent(obs_batch)
+                # priv_reg_loss = (priv_latent_batch - hist_latent_batch.detach()).norm(p=2, dim=1).mean()
+                # priv_reg_stage = min(max((self.counter - self.priv_reg_coef_schedual[2]), 0) / self.priv_reg_coef_schedual[3], 1)
+                # priv_reg_coef = priv_reg_stage * (self.priv_reg_coef_schedual[1] - self.priv_reg_coef_schedual[0]) + self.priv_reg_coef_schedual[0]
+                priv_reg_loss = torch.tensor(0.0, device=self.device)
+                priv_reg_coef = 0.0
 
                 # Estimator
                 priv_states_predicted = self.estimator(obs_batch[:, :self.num_prop])  # obs in batch is with true priv_states
@@ -283,32 +285,32 @@ class PPO:
         return mean_value_loss, mean_surrogate_loss, mean_estimator_loss, mean_discriminator_loss, mean_discriminator_acc, mean_priv_reg_loss, priv_reg_coef
 
     def update_dagger(self):
-        mean_hist_latent_loss = 0
-        if self.actor_critic.is_recurrent:
-            generator = self.storage.reccurent_mini_batch_generator(self.num_mini_batches, self.num_learning_epochs)
-        else:
-            generator = self.storage.mini_batch_generator(self.num_mini_batches, self.num_learning_epochs)
-        for obs_batch, critic_obs_batch, actions_batch, target_values_batch, advantages_batch, returns_batch, old_actions_log_prob_batch, \
-            old_mu_batch, old_sigma_batch, hid_states_batch, masks_batch in generator:
-                with torch.inference_mode():
-                    self.actor_critic.act(obs_batch, hist_encoding=True, masks=masks_batch, hidden_states=hid_states_batch[0])
-
-                # Adaptation module update
-                with torch.inference_mode():
-                    priv_latent_batch = self.actor_critic.actor.infer_priv_latent(obs_batch)
-                hist_latent_batch = self.actor_critic.actor.infer_hist_latent(obs_batch)
-                hist_latent_loss = (priv_latent_batch.detach() - hist_latent_batch).norm(p=2, dim=1).mean()
-                self.hist_encoder_optimizer.zero_grad()
-                hist_latent_loss.backward()
-                nn.utils.clip_grad_norm_(self.actor_critic.actor.history_encoder.parameters(), self.max_grad_norm)
-                self.hist_encoder_optimizer.step()
-                
-                mean_hist_latent_loss += hist_latent_loss.item()
-        num_updates = self.num_learning_epochs * self.num_mini_batches
-        mean_hist_latent_loss /= num_updates
-        self.storage.clear()
-        self.update_counter()
-        return mean_hist_latent_loss
+        # DISABLED (no history encoder)
+        return 0.0
+        # mean_hist_latent_loss = 0
+        # if self.actor_critic.is_recurrent:
+        #     generator = self.storage.reccurent_mini_batch_generator(self.num_mini_batches, self.num_learning_epochs)
+        # else:
+        #     generator = self.storage.mini_batch_generator(self.num_mini_batches, self.num_learning_epochs)
+        # for obs_batch, critic_obs_batch, actions_batch, target_values_batch, advantages_batch, returns_batch, old_actions_log_prob_batch, \
+        #     old_mu_batch, old_sigma_batch, hid_states_batch, masks_batch in generator:
+        #         with torch.inference_mode():
+        #             self.actor_critic.act(obs_batch, hist_encoding=True, masks=masks_batch, hidden_states=hid_states_batch[0])
+        #         # Adaptation module update
+        #         with torch.inference_mode():
+        #             priv_latent_batch = self.actor_critic.actor.infer_priv_latent(obs_batch)
+        #         hist_latent_batch = self.actor_critic.actor.infer_hist_latent(obs_batch)
+        #         hist_latent_loss = (priv_latent_batch.detach() - hist_latent_batch).norm(p=2, dim=1).mean()
+        #         self.hist_encoder_optimizer.zero_grad()
+        #         hist_latent_loss.backward()
+        #         nn.utils.clip_grad_norm_(self.actor_critic.actor.history_encoder.parameters(), self.max_grad_norm)
+        #         self.hist_encoder_optimizer.step()
+        #         mean_hist_latent_loss += hist_latent_loss.item()
+        # num_updates = self.num_learning_epochs * self.num_mini_batches
+        # mean_hist_latent_loss /= num_updates
+        # self.storage.clear()
+        # self.update_counter()
+        # return mean_hist_latent_loss
 
     def update_depth_encoder(self, depth_latent_batch, scandots_latent_batch):
         # Depth encoder ditillation

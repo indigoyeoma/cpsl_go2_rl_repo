@@ -101,7 +101,10 @@ def parse_sim_params(args, cfg):
     return sim_params
 
 def get_load_path(root, load_run=-1, checkpoint=-1, model_name_include="model"):
-    if not os.path.isdir(root):  # use first 4 chars to mactch the run name
+    # If load_run is a full path, use it directly
+    if load_run != -1 and isinstance(load_run, str) and os.path.isdir(load_run):
+        root = load_run
+    elif not os.path.isdir(root):  # use first 4 chars to match the run name
         model_name_cand = os.path.basename(root)
         model_parent = os.path.dirname(root)
         model_names = os.listdir(model_parent)
@@ -110,12 +113,25 @@ def get_load_path(root, load_run=-1, checkpoint=-1, model_name_include="model"):
             if len(name) >= 6:
                 if name[:6] == model_name_cand:
                     root = os.path.join(model_parent, name)
+
+    print(f"Looking for checkpoints in: {root}")
+
     if checkpoint==-1:
-        models = [file for file in os.listdir(root) if model_name_include in file]
-        models.sort(key=lambda m: '{0:0>15}'.format(m))
-        model = models[-1]
+        # Find all .pt model files
+        models = [file for file in os.listdir(root) if model_name_include in file and file.endswith('.pt')]
+        if len(models) == 0:
+            raise FileNotFoundError(f"No model checkpoints found in {root}")
+        # Sort by iteration number extracted from filename (model_XXXX.pt)
+        def get_iter(m):
+            try:
+                return int(m.replace('model_', '').replace('.pt', ''))
+            except:
+                return 0
+        models.sort(key=get_iter)
+        model = models[-1]  # Get latest
+        print(f"Loading latest checkpoint: {model}")
     else:
-        model = "model_{}.pt".format(checkpoint) 
+        model = "model_{}.pt".format(checkpoint)
 
     load_path = os.path.join(root, model)
     return load_path
