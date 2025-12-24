@@ -1,137 +1,57 @@
 # SPDX-FileCopyrightText: Copyright (c) 2021 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: BSD-3-Clause
 #
-# Go2 Student Config with GHN-sampled Depth Encoder
+# Go2 GHN (Graph HyperNetwork) Training Config
 #
-# This config uses a depth encoder architecture sampled from the GHN search space
-# instead of the hand-designed SimpleDepthEncoder.
+# This config trains a GHN to predict depth encoder weights for arbitrary architectures.
+# The GHN learns to generalize across different backbone architectures.
+#
+# Training flow:
+# 1. Sample random backbone architectures for each environment
+# 2. GHN predicts weights for each architecture
+# 3. Student executes actions using GHN-predicted backbones (DAgger)
+# 4. Teacher provides action labels (privileged)
+# 5. Loss = ||student_action - teacher_action||
+# 6. Backprop through GHN to update its weights
+#
+# For regular fixed-backbone student training, use go2_student_config.py instead.
 
 from legged_gym.envs.go2.go2_student_config import Go2StudentParkourCfg, Go2StudentParkourCfgPPO
 
 
 class Go2StudentGHNCfg(Go2StudentParkourCfg):
     """
-    Same as Go2StudentParkourCfg but uses GHN-sampled depth encoder.
+    Environment config for GHN training.
+    Inherits ALL settings from Go2StudentParkourCfg (same depth, noise, etc.)
+    Sets num_envs = camera_num_envs so all envs have cameras (no wasted simulation).
     """
 
     class env(Go2StudentParkourCfg.env):
-        pass  # Same as parent
+        num_envs = 256  # Match camera_num_envs for GHN training
 
     class depth(Go2StudentParkourCfg.depth):
-        pass  # Same as parent
+        camera_num_envs = 256  # All envs have cameras for GHN
 
 
 class Go2StudentGHNCfgPPO(Go2StudentParkourCfgPPO):
     """
-    PPO config with GHN depth encoder architecture.
+    PPO config with GHN training.
+    Inherits ALL settings from Go2StudentParkourCfgPPO, adds GHN-specific settings.
     """
-
-    class algorithm(Go2StudentParkourCfgPPO.algorithm):
-        entropy_coef = 0.01
 
     class depth_encoder(Go2StudentParkourCfgPPO.depth_encoder):
         if_depth = True
         learning_rate = 1e-3
         num_steps_per_env = 24
 
-        # === GHN Encoder Config ===
-        use_ghn_encoder = True  # Use GHN-sampled architecture instead of SimpleDepthEncoder
-
-        # Architecture configuration (from rsl_rl.ghn2.DepthEncoderConfig)
-        # Set to None to sample randomly, or specify a config dict
-        ghn_config = {
-            'channels': [32, 64],       # Channel sizes per conv layer
-            'kernel_sizes': [5, 3],     # Kernel sizes per conv layer
-            'strides': [1, 1],          # Strides per conv layer
-            'pool_type': 'max',         # 'max', 'avg', or 'none'
-            'pool_positions': [0],      # Which layers to add pooling after
-            'activation': 'elu',        # 'elu', 'relu', 'lrelu', 'gelu'
-            'norm': 'bn',               # 'bn', 'ln', 'none'
-            'fc_hidden': 128,           # FC hidden dim (0 = direct projection)
-            'dropout': 0.0,             # Dropout rate
-        }
-
-        # Alternative: use preset configs
-        # Options: 'baseline', 'deep', 'wide', 'light', 'random'
-        ghn_preset = None  # Set to override ghn_config
-
-        # Input/output dimensions (should match environment)
-        input_shape = (58, 87)  # Depth image resolution
-        latent_dim = 32         # Output latent dimension (matches scan_encoder output)
+        # === GHN Training Settings ===
+        num_parallel_architectures = 8  # Number of random architectures sampled per batch
+        # GHN hyperparameters (hid=64, num_classes=32) are set in on_policy_runner.py
+        # Increase num_parallel_architectures for more diversity (but slower training)
 
     class runner(Go2StudentParkourCfgPPO.runner):
         run_name = ''
         experiment_name = 'go2_student_ghn'
-        resume = True
-        load_run = -1
+        resume = True   # Must be True to load teacher checkpoint!
+        load_run = -1   # Pass --load_run /path/to/teacher to load teacher checkpoint
         checkpoint = -1
-
-
-# ============================================================================
-# Preset Architecture Configs
-# ============================================================================
-
-class Go2StudentGHNDeepCfgPPO(Go2StudentGHNCfgPPO):
-    """Deeper architecture variant."""
-
-    class depth_encoder(Go2StudentGHNCfgPPO.depth_encoder):
-        if_depth = True
-        use_ghn_encoder = True
-        ghn_config = {
-            'channels': [32, 64, 64, 128],
-            'kernel_sizes': [5, 3, 3, 3],
-            'strides': [1, 1, 1, 1],
-            'pool_type': 'max',
-            'pool_positions': [0, 2],
-            'activation': 'elu',
-            'norm': 'bn',
-            'fc_hidden': 128,
-            'dropout': 0.0,
-        }
-
-    class runner(Go2StudentGHNCfgPPO.runner):
-        experiment_name = 'go2_student_ghn_deep'
-
-
-class Go2StudentGHNWideCfgPPO(Go2StudentGHNCfgPPO):
-    """Wider architecture variant."""
-
-    class depth_encoder(Go2StudentGHNCfgPPO.depth_encoder):
-        if_depth = True
-        use_ghn_encoder = True
-        ghn_config = {
-            'channels': [64, 128],
-            'kernel_sizes': [5, 3],
-            'strides': [1, 1],
-            'pool_type': 'max',
-            'pool_positions': [0],
-            'activation': 'elu',
-            'norm': 'bn',
-            'fc_hidden': 256,
-            'dropout': 0.0,
-        }
-
-    class runner(Go2StudentGHNCfgPPO.runner):
-        experiment_name = 'go2_student_ghn_wide'
-
-
-class Go2StudentGHNLightCfgPPO(Go2StudentGHNCfgPPO):
-    """Lightweight architecture for fast inference."""
-
-    class depth_encoder(Go2StudentGHNCfgPPO.depth_encoder):
-        if_depth = True
-        use_ghn_encoder = True
-        ghn_config = {
-            'channels': [16, 32],
-            'kernel_sizes': [3, 3],
-            'strides': [2, 2],
-            'pool_type': 'none',
-            'pool_positions': [],
-            'activation': 'relu',
-            'norm': 'bn',
-            'fc_hidden': 64,
-            'dropout': 0.0,
-        }
-
-    class runner(Go2StudentGHNCfgPPO.runner):
-        experiment_name = 'go2_student_ghn_light'

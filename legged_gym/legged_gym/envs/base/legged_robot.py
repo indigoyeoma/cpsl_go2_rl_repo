@@ -168,6 +168,11 @@ class LeggedRobot(BaseTask):
         # These operations are replicated on the hardware
         depth_image = self.crop_depth_image(depth_image)
         depth_image += self.cfg.depth.dis_noise * 2 * (torch.rand(1)-0.5)[0]
+
+        # Add stereo depth camera noise (D435i simulation) for sim-to-real transfer
+        if self.cfg.noise.add_noise:
+            depth_image = self._add_stereo_noise(depth_image)
+
         depth_image = torch.clip(depth_image, -self.cfg.depth.far_clip, -self.cfg.depth.near_clip)
         depth_image = self.resize_transform(depth_image[None, :]).squeeze()
         depth_image = self.normalize_depth_image(depth_image)
@@ -204,6 +209,65 @@ class LeggedRobot(BaseTask):
             col_slice = slice(left_idx, right_idx)
 
         return depth_image[row_slice, col_slice]
+
+    def _add_stereo_noise(self, depth_image):
+        """
+        Add stereo depth camera noise (D435i simulation).
+
+        Simulates:
+        - Distance-dependent noise (far pixels noisier than near)
+        - Block artifacts for too-close pixels
+        - Random spark artifacts
+
+        Args:
+            depth_image: Raw depth image (negative values in meters)
+        Returns:
+            Noisy depth image
+        """
+        # Check if stereo noise config exists
+        if not hasattr(self.cfg.noise, 'forward_depth'):
+            return depth_image
+
+        fd_cfg = self.cfg.noise.forward_depth
+        H, W = depth_image.shape
+        device = depth_image.device
+
+        # Convert to positive depth for easier reasoning
+        depth_pos = -depth_image
+
+        # Create masks for different depth regions
+        far_mask = depth_pos > fd_cfg.stereo_far_distance
+        too_close_mask = depth_pos < fd_cfg.stereo_min_distance
+        near_mask = (~far_mask) & (~too_close_mask)
+
+        # Add noise to far points (higher noise for distant objects)
+        if fd_cfg.stereo_far_noise_std > 0:
+            far_noise = torch.randn_like(depth_image) * fd_cfg.stereo_far_noise_std
+            depth_image = depth_image + far_noise * far_mask.float()
+
+        # Add noise to near points (lower noise for close objects)
+        if fd_cfg.stereo_near_noise_std > 0:
+            near_noise = torch.randn_like(depth_image) * fd_cfg.stereo_near_noise_std
+            depth_image = depth_image + near_noise * near_mask.float()
+
+        # Add block artifacts for too-close pixels (stereo matching failure)
+        if fd_cfg.stereo_full_block_artifacts_prob > 0 and too_close_mask.any():
+            # Random block artifact with probability
+            if torch.rand(1).item() < fd_cfg.stereo_full_block_artifacts_prob:
+                # Pick a random artifact value
+                import random
+                artifact_value = random.choice(fd_cfg.stereo_full_block_values)
+                # Set too-close pixels to artifact value (in negative space)
+                depth_image[too_close_mask] = -artifact_value
+
+        # Add spark artifacts (random bright pixels)
+        if hasattr(fd_cfg, 'stereo_half_block_spark_prob') and fd_cfg.stereo_half_block_spark_prob > 0:
+            spark_mask = torch.rand_like(depth_image) < fd_cfg.stereo_half_block_spark_prob
+            spark_mask = spark_mask & too_close_mask
+            if spark_mask.any():
+                depth_image[spark_mask] = -fd_cfg.stereo_half_block_value
+
+        return depth_image
 
     def update_depth_buffer(self):
         if not self.cfg.depth.use_camera:
@@ -919,12 +983,29 @@ class LeggedRobot(BaseTask):
             self.cam_handles.append(camera_handle)
             
             local_transform = gymapi.Transform()
-            
-            camera_position = np.copy(config.position)
-            camera_angle = np.random.uniform(config.angle[0], config.angle[1])
-            
+
+            # Handle position - support both simple array and dict with mean/std
+            if isinstance(config.position, dict):
+                pos_mean = np.array(config.position['mean'])
+                pos_std = np.array(config.position.get('std', [0, 0, 0]))
+                camera_position = pos_mean + np.random.randn(3) * pos_std
+            else:
+                camera_position = np.copy(config.position)
+
+            # Handle rotation - support both simple angle array and dict with lower/upper
+            if hasattr(config, 'rotation') and isinstance(config.rotation, dict):
+                # rotation dict: [roll, pitch, yaw] with lower/upper bounds
+                rot_lower = np.array(config.rotation['lower'])
+                rot_upper = np.array(config.rotation['upper'])
+                camera_rotation = np.random.uniform(rot_lower, rot_upper)
+                # Convert to quaternion (roll, pitch, yaw -> ZYX euler)
+                local_transform.r = gymapi.Quat.from_euler_zyx(camera_rotation[2], camera_rotation[1], camera_rotation[0])
+            else:
+                # Legacy: angle is [min_pitch, max_pitch] in degrees
+                camera_angle = np.random.uniform(config.angle[0], config.angle[1])
+                local_transform.r = gymapi.Quat.from_euler_zyx(0, np.radians(camera_angle), 0)
+
             local_transform.p = gymapi.Vec3(*camera_position)
-            local_transform.r = gymapi.Quat.from_euler_zyx(0, np.radians(camera_angle), 0)
             root_handle = self.gym.get_actor_root_rigid_body_handle(env_handle, actor_handle)
             
             self.gym.attach_camera_to_body(camera_handle, env_handle, root_handle, local_transform, gymapi.FOLLOW_TRANSFORM)

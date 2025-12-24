@@ -76,7 +76,7 @@ def play(args):
     num_actions = 12
     
     # depth_buffer_len = 2
-    depth_resized = (87, 58)
+    depth_resized = (64, 48)  # Matches training go2_student_config.py resized = (64, 48)
     
     n_proprio = 3 + 2 + 3 + 4 + 36 + 4 +1
     history_len = 10
@@ -116,7 +116,7 @@ def play(args):
     
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--proj_name', type=str, default='go2_student', help='Project name (go2_student, go2_teacher, etc.)')
+    parser.add_argument('--proj_name', type=str, default='parkour_new', help='Project name (go2_student, go2_teacher, etc.)')
     parser.add_argument('--exptid', type=str)
     parser.add_argument('--checkpoint', type=int, default=-1)
     parser.add_argument('--tanh', action='store_true')

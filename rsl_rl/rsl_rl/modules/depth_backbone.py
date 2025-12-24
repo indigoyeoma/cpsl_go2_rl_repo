@@ -209,12 +209,12 @@ class SimpleDepthEncoder(nn.Module):
     def forward(self, depth_image, proprioception):
         """
         Args:
-            depth_image: [batch_size, H, W] or [batch_size, 1, H, W] single depth frame
+            depth_image: [batch_size, H, W] single depth frame
             proprioception: [batch_size, n_proprio] robot state
         Returns:
             [batch_size, 34] = 32 depth latent + 2 yaw estimate
         """
-        # Same as RecurrentDepthBackbone
+        # Same as RecurrentDepthBackbone (no unsqueeze - base_backbone handles it)
         depth_image = self.base_backbone(depth_image)
         depth_latent = self.combination_mlp(torch.cat((depth_image, proprioception), dim=-1))
 
@@ -281,6 +281,45 @@ class DepthOnlyFCBackbone58x87(nn.Module):
             nn.Flatten(),
             # [32, 25, 39]
             nn.Linear(64 * 25 * 39, 128),
+            activation,
+            nn.Linear(128, scandots_output_dim)
+        )
+
+        if output_activation == "tanh":
+            self.output_activation = nn.Tanh()
+        else:
+            self.output_activation = activation
+
+    def forward(self, images: torch.Tensor):
+        images_compressed = self.image_compression(images.unsqueeze(1))
+        latent = self.output_activation(images_compressed)
+
+        return latent
+
+
+class DepthOnlyFCBackbone48x64(nn.Module):
+    """Depth encoder backbone for 48x64 input resolution (matched to parkour repo).
+
+    Input: [batch, 48, 64] depth image
+    Output: [batch, scandots_output_dim] latent vector (typically 32)
+    """
+    def __init__(self, prop_dim, scandots_output_dim, hidden_state_dim, output_activation=None, num_frames=1):
+        super().__init__()
+
+        self.num_frames = num_frames
+        activation = nn.ELU()
+        self.image_compression = nn.Sequential(
+            # [1, 48, 64]
+            nn.Conv2d(in_channels=self.num_frames, out_channels=32, kernel_size=5),
+            # [32, 44, 60]
+            nn.MaxPool2d(kernel_size=2, stride=2),
+            # [32, 22, 30]
+            activation,
+            nn.Conv2d(in_channels=32, out_channels=64, kernel_size=3),
+            # [64, 20, 28]
+            activation,
+            nn.Flatten(),
+            nn.Linear(64 * 20 * 28, 128),
             activation,
             nn.Linear(128, scandots_output_dim)
         )

@@ -3,6 +3,17 @@
 
 from legged_gym.envs.base.legged_robot_config import LeggedRobotCfg, LeggedRobotCfgPPO
 
+# Go2 joint limits from SDK (matched to parkour repo)
+# go2_const_dof_range = dict(
+#     Hip_max=1.0472,
+#     Hip_min=-1.0472,
+#     Front_Thigh_max=3.4907,
+#     Front_Thigh_min=-1.5708,
+#     Rear_Thigh_max=4.5379,
+#     Rear_Thigh_min=-0.5236,
+#     Calf_max=-0.83776,
+#     Calf_min=-2.7227,
+# )
 
 class Go2StudentParkourCfg( LeggedRobotCfg ):
     class env( LeggedRobotCfg.env ):
@@ -39,19 +50,24 @@ class Go2StudentParkourCfg( LeggedRobotCfg ):
         }
 
     class control( LeggedRobotCfg.control ):
-        # PD Drive parameters:
+        # PD Drive parameters (matched to parkour repo)
         control_type = 'P'
-        stiffness = {'joint': 25.}  # [N*m/rad]
-        damping = {'joint': 0.6}     # [N*m*s/rad]
-        action_scale = 0.25
+        stiffness = {'joint': 40.}  # [N*m/rad] - parkour uses 40
+        damping = {'joint': 1.0}    # [N*m*s/rad] - parkour uses 1.0
+        action_scale = 0.25          # parkour uses 0.5
         decimation = 4
 
     class asset( LeggedRobotCfg.asset ):
-        file = '{LEGGED_GYM_ROOT_DIR}/resources/robots/go2/urdf/go2.urdf'
+        file = '{LEGGED_GYM_ROOT_DIR}/resources/robots/go2/urdf/go2_with_camera.urdf'
+        name = "go2"
         foot_name = "foot"
+        front_hip_names = ["FL_hip_joint", "FR_hip_joint"]
+        rear_hip_names = ["RL_hip_joint", "RR_hip_joint"]
         penalize_contacts_on = ["thigh", "calf", "base"]
         terminate_after_contacts_on = ["base"]
         self_collisions = 1 # 1 to disable, 0 to enable...bitwise filter
+        # sdk_dof_range = go2_const_dof_range  # Joint limits from SDK
+        # dof_velocity_override = 35.  # Max joint velocity [rad/s]
 
     class noise( LeggedRobotCfg.noise ):
         # Enable sensor noise for sim-to-real transfer
@@ -108,27 +124,49 @@ class Go2StudentParkourCfg( LeggedRobotCfg ):
         # STUDENT CONFIG: Uses depth camera (D435i)
         use_camera = True
 
-        # D435i mounted on robot's head
-
+        # D435i mounted on robot's head (matched to go2_with_camera.urdf)
         # Position relative to base_link: [forward, left/right, up]
-        # From official Unitree URDF: front_camera_joint xyz="0.32715 -0.00003 0.04297"
-        position = [0.327, 0.0, 0.043]  # Official Go2 front camera position
-        angle = [-15, 15]  # Pitch angle range (degrees) - positive is down
+        # From URDF: xyz="0.34 -0.00 0.08" rpy="0 0.45 0"
+        position = dict(
+            mean=[0.34, 0.0, 0.08],       # Camera position from URDF
+            std=[0.01, 0.0025, 0.03],     # Domain randomization (same as parkour)
+        )
+        # Rotation [roll, pitch, yaw] - 0.45 rad (~25.8°) pitch down from URDF
+        rotation = dict(
+            lower=[-0.1, 0.40, -0.1],     # Pitch centered at 0.45 rad with ±0.05 variation
+            upper=[0.1, 0.50, 0.1],       # ±0.1 rad (~6°) roll/yaw, ±0.05 pitch
+        )
 
-        # D435i specifications (matching parkour deployment settings)
-        # Native resolution: 640x480 in deployment
-        # Simulation uses smaller resolution for efficiency
-        original = (106, 60)  # Simulation camera resolution (before crop)
-        resized = (87, 58)    # Final output resolution (after crop & resize)
-        horizontal_fov = 87   # D435i horizontal FOV: 87°
+        # OLD CONFIG (commented out):
+        # # D435i mounted on robot's head (matched to real Go2 setup)
+        # # Position relative to base_link: [forward, left/right, up]
+        # # Camera body at [0.34, 0.0, 0.09], depth sensor (left IR) offset:
+        # #   +4.2mm forward (zero depth to glass)
+        # #   +17.5mm left (depth sensor offset from body center)
+        # position = dict(
+        #     mean=[0.3442, 0.0175, 0.09],  # Depth sensor position (not body center)
+        #     std=[0.01, 0.0025, 0.03],     # Domain randomization (same as parkour)
+        # )
+        # # Rotation [roll, pitch, yaw] - no pitch tilt, with small randomization
+        # rotation = dict(
+        #     lower=[-0.1, -0.05, -0.1],    # Small variation around 0 pitch
+        #     upper=[0.1, 0.05, 0.1],       # ±0.05 rad (~3°) pitch, ±0.1 rad (~6°) roll/yaw
+        # )
 
-        # Cropping settings (matching parkour go2_visual.py ratios)
-        # Parkour uses 640x480 with crop_top=48, crop_left=28, crop_right=36, crop_bottom=0
-        # Proportions: top=10%, left=4.4%, right=5.6%, bottom=0%
-        crop_top = 6      # 60 * 0.10 = 6 (matches parkour 10% top crop)
-        crop_bottom = 0   # No bottom crop (matches parkour)
-        crop_left = 5     # 106 * 0.044 ≈ 5 (matches parkour 4.4% left crop)
-        crop_right = 6    # 106 * 0.056 ≈ 6 (matches parkour 5.6% right crop)
+        # D435i specifications (matched to parkour distill config)
+        # parkour: resolution = [int(480/4), int(640/4)] = [120, 160]
+        # parkour: resized_resolution = [48, 64]
+        original = (160, 120)  # 640/4 x 480/4 (width, height)
+        resized = (64, 48)     # parkour output resolution
+        horizontal_fov = 87    # D435i horizontal FOV: 87°
+
+        # Cropping settings (matched to parkour)
+        # parkour: crop_top_bottom = [int(48/4), 0] = [12, 0]
+        # parkour: crop_left_right = [int(28/4), int(36/4)] = [7, 9]
+        crop_top = 12     # parkour uses 48/4 = 12
+        crop_bottom = 0   # No bottom crop
+        crop_left = 7     # parkour uses 28/4 = 7
+        crop_right = 9    # parkour uses 36/4 = 9
 
         # D435i depth range: 0.3m (min) to 3m (optimal max)
         near_clip = 0.3  # D435i minimum depth distance
@@ -164,8 +202,10 @@ class Go2StudentParkourCfg( LeggedRobotCfg ):
         randomize_motor = True
         motor_strength_range = [0.8, 1.2]  # Motor strength variation
 
-        # NO push during distillation - student learns from stable teacher demos
-        push_robots = False
+        # Push robots for robustness (matched to teacher)
+        push_robots = True
+        push_interval_s = 8
+        max_push_vel_xy = 0.5
 
         # Gravity bias randomization (simulates IMU drift)
         randomize_gravity_bias = True
@@ -217,6 +257,23 @@ class Go2StudentParkourCfgPPO( LeggedRobotCfgPPO ):
         if_depth = True
         learning_rate = 1e-3
         num_steps_per_env = 24
+
+        # === Depth Augmentation for Sim-to-Real Transfer ===
+        # Disabled to match parkour repo approach (stereo noise in env is sufficient)
+        # Parkour uses only stereo noise in environment, not extra augmentation in training
+        use_depth_augmentation = False
+
+        # DepthAugmentation parameters (from depth_backbone.py)
+        class augmentation:
+            dropout_prob = 0.02        # Probability of dropping each pixel (sensor failures)
+            noise_std = 0.03           # Gaussian noise std (in normalized depth units)
+            cutout_prob = 0.2          # Probability of applying rectangular cutout
+            cutout_size_range = (5, 15)  # Min/max cutout size (pixels)
+            edge_noise_prob = 0.3      # Probability of adding edge noise
+            edge_noise_std = 0.05      # Noise std at depth discontinuities
+            depth_scale_range = (0.95, 1.05)  # Random depth scaling (calibration errors)
+            flip_prob = 0.0            # Horizontal flip prob (0 for locomotion - asymmetric)
+            hole_value = -0.5          # Value to fill holes with (far clip)
 
     class runner( LeggedRobotCfgPPO.runner ):
         run_name = ''

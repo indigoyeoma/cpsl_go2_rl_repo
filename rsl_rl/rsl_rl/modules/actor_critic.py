@@ -120,9 +120,8 @@ class Actor(nn.Module):
             self.priv_encoder = nn.Identity()
             priv_encoder_output_dim = num_priv_latent
 
-        # DISABLED - no history encoder (single frame only)
-        # self.history_encoder = StateHistoryEncoder(activation, num_prop, num_hist, priv_encoder_output_dim)
-        self.history_encoder = None
+        # History encoder: processes proprioception history to infer implicit states (friction, mass, etc.)
+        self.history_encoder = StateHistoryEncoder(activation, num_prop, num_hist, priv_encoder_output_dim)
 
         if self.if_scan_encode:
             scan_encoder = []
@@ -159,7 +158,6 @@ class Actor(nn.Module):
         self.actor_backbone = nn.Sequential(*actor_layers)
 
     def forward(self, obs, hist_encoding: bool, eval=False, scandots_latent=None):
-        # hist_encoding ignored - always use priv_encoder (no history)
         if self.if_scan_encode:
             obs_scan = obs[:, self.num_prop:self.num_prop + self.num_scan]
             if scandots_latent is None:
@@ -170,7 +168,11 @@ class Actor(nn.Module):
         else:
             obs_prop_scan = obs[:, :self.num_prop + self.num_scan]
         obs_priv_explicit = obs[:, self.num_prop + self.num_scan:self.num_prop + self.num_scan + self.num_priv_explicit]
-        latent = self.infer_priv_latent(obs)
+        # Use history encoder for deployment, priv encoder for training
+        if hist_encoding:
+            latent = self.infer_hist_latent(obs)
+        else:
+            latent = self.infer_priv_latent(obs)
         backbone_input = torch.cat([obs_prop_scan, obs_priv_explicit, latent], dim=1)
         backbone_output = self.actor_backbone(backbone_input)
         return backbone_output
@@ -179,10 +181,9 @@ class Actor(nn.Module):
         priv = obs[:, self.num_prop + self.num_scan + self.num_priv_explicit: self.num_prop + self.num_scan + self.num_priv_explicit + self.num_priv_latent]
         return self.priv_encoder(priv)
     
-    # DISABLED - no history encoder
-    # def infer_hist_latent(self, obs):
-    #     hist = obs[:, -self.num_hist*self.num_prop:]
-    #     return self.history_encoder(hist.view(-1, self.num_hist, self.num_prop))
+    def infer_hist_latent(self, obs):
+        hist = obs[:, -self.num_hist*self.num_prop:]
+        return self.history_encoder(hist.view(-1, self.num_hist, self.num_prop))
     
     def infer_scandots_latent(self, obs):
         scan = obs[:, self.num_prop:self.num_prop + self.num_scan]
