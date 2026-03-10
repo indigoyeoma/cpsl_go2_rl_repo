@@ -59,8 +59,10 @@ def play(args):
     if args.web:
         web_viewer = webviewer.WebViewer()
     faulthandler.enable()
-    exptid = args.exptid
-    log_pth = "../../logs/{}/".format(args.proj_name) + args.exptid
+    if args.load_run is not None:
+        log_pth = os.path.join(LEGGED_GYM_ROOT_DIR, 'logs', args.proj_name, args.load_run)
+    else:
+        log_pth = os.path.join(LEGGED_GYM_ROOT_DIR, 'logs', args.proj_name, args.exptid)
 
     env_cfg, train_cfg = task_registry.get_cfgs(name=args.task)
     # override some parameters for testing
@@ -86,11 +88,11 @@ def play(args):
                                     "platform": 0.,
                                     "large stairs up": 0.,
                                     "large stairs down": 0.,
-                                    "parkour": 0.,
-                                    "parkour_hurdle": 0.5,
-                                    "parkour_flat": 0.,
-                                    "parkour_step": 0.5,
-                                    "parkour_gap": 0.,
+                                    "parkour": 0.2,
+                                    "parkour_hurdle": 0.2,
+                                    "parkour_flat": 0.2,
+                                    "parkour_step": 0.2,
+                                    "parkour_gap": 0.2,
                                     "demo": 0.0}
     
     env_cfg.terrain.terrain_proportions = list(env_cfg.terrain.terrain_dict.values())
@@ -160,7 +162,10 @@ def play(args):
                     depth_latent_and_yaw = depth_encoder(infos["depth"], obs_student)
                     depth_latent = depth_latent_and_yaw[:, :-2]
                     yaw = depth_latent_and_yaw[:, -2:]
-                    obs[:, 6:8] = 1.5*yaw
+                    if "delta_yaw_ok" not in infos:
+                        infos["delta_yaw_ok"] = torch.ones(env.num_envs, dtype=torch.bool, device=env.device)
+                    
+                    obs[:, 6:8] = torch.where(infos["delta_yaw_ok"].unsqueeze(1), 1.5*yaw, obs[:, 6:8])
                 else:
                     depth_latent = None
 

@@ -136,26 +136,29 @@ class DepthAugmentation(nn.Module):
 
 
 class RecurrentDepthBackbone(nn.Module):
-    def __init__(self, base_backbone, env_cfg) -> None:
+    def __init__(self, base_backbone, env_cfg, latent_dim=32) -> None:
         super().__init__()
         activation = nn.ELU()
         last_activation = nn.Tanh()
         self.base_backbone = base_backbone
+        # Store for forward pass (optional validation)
+        self.latent_dim = latent_dim
+        
         if env_cfg == None:
             self.combination_mlp = nn.Sequential(
-                                    nn.Linear(32 + 53, 128),
+                                    nn.Linear(latent_dim + 53, 128),
                                     activation,
-                                    nn.Linear(128, 32)
+                                    nn.Linear(128, latent_dim)
                                 )
         else:
             self.combination_mlp = nn.Sequential(
-                                        nn.Linear(32 + env_cfg.env.n_proprio, 128),
+                                        nn.Linear(latent_dim + env_cfg.env.n_proprio, 128),
                                         activation,
-                                        nn.Linear(128, 32)
+                                        nn.Linear(128, latent_dim)
                                     )
-        self.rnn = nn.GRU(input_size=32, hidden_size=512, batch_first=True)
+        self.rnn = nn.GRU(input_size=latent_dim, hidden_size=512, batch_first=True)
         self.output_mlp = nn.Sequential(
-                                nn.Linear(512, 32+2),
+                                nn.Linear(512, latent_dim+2),
                                 last_activation
                             )
         self.hidden_states = None
@@ -178,31 +181,32 @@ class SimpleDepthEncoder(nn.Module):
     Flow: depth → base_backbone → [32] → cat proprio → [85] → combination_mlp → [32] → output_mlp → [34]
     (RecurrentDepthBackbone has GRU between combination_mlp and output_mlp)
     """
-    def __init__(self, base_backbone, env_cfg) -> None:
+    def __init__(self, base_backbone, env_cfg, latent_dim=32) -> None:
         super().__init__()
         activation = nn.ELU()
         last_activation = nn.Tanh()
         self.base_backbone = base_backbone
+        self.latent_dim = latent_dim
 
         # Same as RecurrentDepthBackbone
         if env_cfg == None:
             self.combination_mlp = nn.Sequential(
-                                    nn.Linear(32 + 53, 128),
+                                    nn.Linear(latent_dim + 53, 128),
                                     activation,
-                                    nn.Linear(128, 32)
+                                    nn.Linear(128, latent_dim)
                                 )
         else:
             self.combination_mlp = nn.Sequential(
-                                        nn.Linear(32 + env_cfg.env.n_proprio, 128),
+                                        nn.Linear(latent_dim + env_cfg.env.n_proprio, 128),
                                         activation,
-                                        nn.Linear(128, 32)
+                                        nn.Linear(128, latent_dim)
                                     )
 
         # NO GRU here (RecurrentDepthBackbone has: self.rnn = nn.GRU(input_size=32, hidden_size=512))
 
-        # Output: 32 → 34 (instead of 512 → 34 in RecurrentDepthBackbone)
+        # Output: latent_dim → latent_dim+2 (instead of 512 → 34 in RecurrentDepthBackbone)
         self.output_mlp = nn.Sequential(
-                                nn.Linear(32, 32 + 2),
+                                nn.Linear(latent_dim, latent_dim + 2),
                                 last_activation
                             )
 
@@ -231,14 +235,14 @@ class SimpleDepthEncoder(nn.Module):
 
 
 class StackDepthEncoder(nn.Module):
-    def __init__(self, base_backbone, env_cfg) -> None:
+    def __init__(self, base_backbone, env_cfg, latent_dim=32) -> None:
         super().__init__()
         activation = nn.ELU()
         self.base_backbone = base_backbone
         self.combination_mlp = nn.Sequential(
-                                    nn.Linear(32 + env_cfg.env.n_proprio, 128),
+                                    nn.Linear(latent_dim + env_cfg.env.n_proprio, 128),
                                     activation,
-                                    nn.Linear(128, 32)
+                                    nn.Linear(128, latent_dim)
                                 )
 
         # COMMENTED OUT: Temporal encoding with Conv1D (for buffer_len > 1)
@@ -277,10 +281,52 @@ class DepthOnlyFCBackbone58x87(nn.Module):
             # [32, 27, 41]
             activation,
             nn.Conv2d(in_channels=32, out_channels=64, kernel_size=3),
+            # [64, 25, 39]
             activation,
             nn.Flatten(),
-            # [32, 25, 39]
-            nn.Linear(64 * 25 * 39, 128),
+            # [64 * 25 * 39 = 62400]
+            nn.Linear(62400, 128),
+            activation,
+            nn.Linear(128, scandots_output_dim)
+        )
+
+        if output_activation == "tanh":
+            self.output_activation = nn.Tanh()
+        else:
+            self.output_activation = activation
+
+    def forward(self, images: torch.Tensor):
+        images_compressed = self.image_compression(images.unsqueeze(1))
+        latent = self.output_activation(images_compressed)
+
+        return latent
+
+
+class DepthOnlyFCBackbone128x96(nn.Module):
+    """Depth encoder backbone for 96x128 input resolution.
+
+    Input: [batch, 96, 128] depth image
+    Output: [batch, scandots_output_dim] latent vector (typically 32)
+    """
+    def __init__(self, prop_dim, scandots_output_dim, hidden_state_dim, output_activation=None, num_frames=1):
+        super().__init__()
+
+        self.num_frames = num_frames
+        activation = nn.ELU()
+        self.image_compression = nn.Sequential(
+            # [1, 96, 128]
+            nn.Conv2d(in_channels=self.num_frames, out_channels=32, kernel_size=5),
+            # [32, 92, 124]
+            nn.MaxPool2d(kernel_size=2, stride=2),
+            # [32, 46, 62]
+            activation,
+            nn.Conv2d(in_channels=32, out_channels=64, kernel_size=3),
+            # [64, 44, 60]
+            activation,
+            nn.MaxPool2d(kernel_size=2, stride=2),
+            # [64, 22, 30]
+            nn.Flatten(),
+            nn.Linear(64 * 22 * 30, 128),
             activation,
             nn.Linear(128, scandots_output_dim)
         )

@@ -1106,6 +1106,8 @@ class LeggedRobot(BaseTask):
             self.mass_params_tensor[i, :] = torch.from_numpy(mass_params).to(self.device).to(torch.float)
         if self.cfg.domain_rand.randomize_friction:
             self.friction_coeffs_tensor = self.friction_coeffs.to(self.device).to(torch.float).squeeze(-1)
+        else:
+            self.friction_coeffs_tensor = torch.ones(self.num_envs, device=self.device, dtype=torch.float)
 
         self.feet_indices = torch.zeros(len(feet_names), dtype=torch.long, device=self.device, requires_grad=False)
         for i in range(len(feet_names)):

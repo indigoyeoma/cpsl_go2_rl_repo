@@ -330,41 +330,36 @@ class PPO:
 
             self.depth_actor_optimizer.zero_grad()
             loss.backward()
-
-            # DIAGNOSTIC: Check gradient norms and append to diagnostic file
-            enc_grad_norm = sum(p.grad.norm().item() for p in self.depth_encoder.parameters() if p.grad is not None)
-            actor_grad_norm = sum(p.grad.norm().item() for p in self.depth_actor.parameters() if p.grad is not None)
-
-            # Log to file (append mode) - first 10 iterations only
-            if not hasattr(self, '_grad_log_count'):
-                self._grad_log_count = 0
-            if self._grad_log_count < 10:
-                try:
-                    with open('diagnostic_output.txt', 'a') as f:
-                        f.write(f"Iter {self._grad_log_count}: depth_encoder_grad={enc_grad_norm:.6f}, depth_actor_grad={actor_grad_norm:.6f}, loss={depth_actor_loss.item():.4f}\n")
-                except:
-                    pass
-                self._grad_log_count += 1
-
-            if enc_grad_norm < 0.001:
-                print(f"WARNING: depth_encoder grad_norm is very low: {enc_grad_norm:.6f}")
-
             nn.utils.clip_grad_norm_(self.depth_actor.parameters(), self.max_grad_norm)
             self.depth_actor_optimizer.step()
             return depth_actor_loss.item(), yaw_loss.item()
+
     
-    def update_depth_both(self, depth_latent_batch, scandots_latent_batch, actions_student_batch, actions_teacher_batch):
+    def update_student_full(self, depth_latent_batch, scandots_latent_batch, actions_student_batch, actions_teacher_batch, yaw_student_batch, yaw_teacher_batch):
         if self.if_depth:
+            # 1. Feature Distillation (Depth Encoder Loss)
+            # Match student's depth latent to teacher's scan latent
             depth_encoder_loss = (scandots_latent_batch.detach() - depth_latent_batch).norm(p=2, dim=1).mean()
+
+            # 2. Action Cloning (Actor Loss)
+            # Match student's actions to teacher's actions
             depth_actor_loss = (actions_teacher_batch.detach() - actions_student_batch).norm(p=2, dim=1).mean()
 
-            depth_loss = depth_encoder_loss + depth_actor_loss
+            # 3. Yaw Prediction Loss
+            # Match student's yaw prediction to teacher's ground truth yaw
+            yaw_loss = (yaw_teacher_batch.detach() - yaw_student_batch).norm(p=2, dim=1).mean()
 
+            # Total Loss
+            total_loss = depth_encoder_loss + depth_actor_loss + yaw_loss
+
+            # Optimization Step
             self.depth_actor_optimizer.zero_grad()
-            depth_loss.backward()
+            total_loss.backward()
             nn.utils.clip_grad_norm_([*self.depth_actor.parameters(), *self.depth_encoder.parameters()], self.max_grad_norm)
             self.depth_actor_optimizer.step()
-            return depth_encoder_loss.item(), depth_actor_loss.item()
+
+            return depth_encoder_loss.item(), depth_actor_loss.item(), yaw_loss.item()
+
     
     def update_counter(self):
         self.counter += 1

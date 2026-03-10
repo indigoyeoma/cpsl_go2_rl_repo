@@ -10,10 +10,11 @@
 
 ### Installation ###
 ```bash
-conda create -n parkour python=3.8
-conda activate parkour
+conda create -n gym_env python=3.8
+conda activate gym_env
 cd
-pip3 install torch==1.10.0+cu113 torchvision==0.11.1+cu113 torchaudio==0.10.0+cu113 -f https://download.pytorch.org/whl/cu113/torch_stable.html
+# pip3 install torch==1.10.0+cu113 torchvision==0.11.1+cu113 torchaudio==0.10.0+cu113 -f https://download.pytorch.org/whl/cu113/torch_stable.html
+conda install pytorch==2.3.1 torchvision==0.18.1 torchaudio==2.3.1 pytorch-cuda=12.1 -c pytorch -c nvidia
 git clone git@github.com:chengxuxin/extreme-parkour.git
 cd extreme-parkour
 # Download the Isaac Gym binaries from https://developer.nvidia.com/isaac-gym 
@@ -21,7 +22,7 @@ cd extreme-parkour
 cd isaacgym/python && pip install -e .
 cd ~/extreme-parkour/rsl_rl && pip install -e .
 cd ~/extreme-parkour/legged_gym && pip install -e .
-pip install "numpy<1.24" pydelatin wandb tqdm opencv-python ipdb pyfqmr flask
+pip install "numpy<1.24" pydelatin wandb tqdm opencv-python ipdb pyfqmr flask tensorboard einops
 ```
 
 ### Usage ###
@@ -73,6 +74,16 @@ Can be used in both IsaacGym and web viewer.
 - --no_wandb: no wandb logging.
 - --use_camera: use camera or scandots.
 - --web: used for playing on headless machines. It will forward a port with vscode and you can visualize seemlessly in vscode with your idle gpu or cpu. [Live Preview](https://marketplace.visualstudio.com/items?itemName=ms-vscode.live-server) vscode extension required, otherwise you can view it in any browser.
+
+
+### FAQ
+1.ImportError: libpython3.8.so.1.0: cannot open shared object file: No such file or directory
+
+run the following
+
+```
+export LD_LIBRARY_PATH=/home/$USER/miniconda3/envs/otlinear_gym/lib
+```
 
 ### Acknowledgement
 https://github.com/leggedrobotics/legged_gym  

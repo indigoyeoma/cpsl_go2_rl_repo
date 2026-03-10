@@ -1257,8 +1257,8 @@ Stephen Brawner (brawner@gmail.com)
     name="d435i_camera_joint"
     type="fixed">
     <origin
-      xyz="0.34 -0.00 0.08"
-      rpy="0 0.45 0" />
+      xyz="0.34 -0.00 0.09"
+      rpy="0 0.0 0" />
     <parent
       link="base" />
     <child

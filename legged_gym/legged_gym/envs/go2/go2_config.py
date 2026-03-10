@@ -15,7 +15,7 @@ from legged_gym.envs.base.legged_robot_config import LeggedRobotCfg, LeggedRobot
 class Go2ParkourCfg(LeggedRobotCfg):
     """Go2 Teacher config - uses privileged terrain scans (no depth camera)."""
 
-    class env(LeggedRobotCfg.env):
+    class env(LeggedRobotCfg.env): 
         num_envs = 4096
         history_len = 10
         history_encoding = True

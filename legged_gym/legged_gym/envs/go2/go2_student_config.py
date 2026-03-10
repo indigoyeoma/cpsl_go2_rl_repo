@@ -3,17 +3,7 @@
 
 from legged_gym.envs.base.legged_robot_config import LeggedRobotCfg, LeggedRobotCfgPPO
 
-# Go2 joint limits from SDK (matched to parkour repo)
-# go2_const_dof_range = dict(
-#     Hip_max=1.0472,
-#     Hip_min=-1.0472,
-#     Front_Thigh_max=3.4907,
-#     Front_Thigh_min=-1.5708,
-#     Rear_Thigh_max=4.5379,
-#     Rear_Thigh_min=-0.5236,
-#     Calf_max=-0.83776,
-#     Calf_min=-2.7227,
-# )
+
 
 class Go2StudentParkourCfg( LeggedRobotCfg ):
     class env( LeggedRobotCfg.env ):
@@ -128,36 +118,21 @@ class Go2StudentParkourCfg( LeggedRobotCfg ):
         # Position relative to base_link: [forward, left/right, up]
         # From URDF: xyz="0.34 -0.00 0.08" rpy="0 0.45 0"
         position = dict(
-            mean=[0.34, 0.0, 0.08],       # Camera position from URDF
+            mean=[0.34, 0.0, 0.09],       # Camera position from URDF
             std=[0.01, 0.0025, 0.03],     # Domain randomization (same as parkour)
         )
-        # Rotation [roll, pitch, yaw] - 0.45 rad (~25.8°) pitch down from URDF
+        # Rotation [roll, pitch, yaw] - 0 rad (0°) pitch matched to URDF
         rotation = dict(
-            lower=[-0.1, 0.40, -0.1],     # Pitch centered at 0.45 rad with ±0.05 variation
-            upper=[0.1, 0.50, 0.1],       # ±0.1 rad (~6°) roll/yaw, ±0.05 pitch
+            lower=[-0.1, -0.05, -0.1],     # Pitch centered at 0 rad with ±0.05 variation
+            upper=[0.1, 0.05, 0.1],       # ±0.1 rad (~6°) roll/yaw, ±0.05 pitch
         )
 
-        # OLD CONFIG (commented out):
-        # # D435i mounted on robot's head (matched to real Go2 setup)
-        # # Position relative to base_link: [forward, left/right, up]
-        # # Camera body at [0.34, 0.0, 0.09], depth sensor (left IR) offset:
-        # #   +4.2mm forward (zero depth to glass)
-        # #   +17.5mm left (depth sensor offset from body center)
-        # position = dict(
-        #     mean=[0.3442, 0.0175, 0.09],  # Depth sensor position (not body center)
-        #     std=[0.01, 0.0025, 0.03],     # Domain randomization (same as parkour)
-        # )
-        # # Rotation [roll, pitch, yaw] - no pitch tilt, with small randomization
-        # rotation = dict(
-        #     lower=[-0.1, -0.05, -0.1],    # Small variation around 0 pitch
-        #     upper=[0.1, 0.05, 0.1],       # ±0.05 rad (~3°) pitch, ±0.1 rad (~6°) roll/yaw
-        # )
+
 
         # D435i specifications (matched to parkour distill config)
         # parkour: resolution = [int(480/4), int(640/4)] = [120, 160]
-        # parkour: resized_resolution = [48, 64]
         original = (160, 120)  # 640/4 x 480/4 (width, height)
-        resized = (64, 48)     # parkour output resolution
+        resized = (128, 96)    # Go2 depth resolution
         horizontal_fov = 87    # D435i horizontal FOV: 87°
 
         # Cropping settings (matched to parkour)
@@ -172,8 +147,7 @@ class Go2StudentParkourCfg( LeggedRobotCfg ):
         near_clip = 0.3  # D435i minimum depth distance
         far_clip = 3.0   # D435i maximum reliable depth distance
 
-        # Use only single frame (no temporal buffering)
-        buffer_len = 1  # Single frame, feedforward encoder
+        buffer_len = 1
 
         update_interval = 4  # Camera update frequency
         dis_noise = 0.01  # Depth sensor noise for sim-to-real (applied in env)
@@ -253,6 +227,12 @@ class Go2StudentParkourCfg( LeggedRobotCfg ):
 class Go2StudentParkourCfgPPO( LeggedRobotCfgPPO ):
     class algorithm( LeggedRobotCfgPPO.algorithm ):
         entropy_coef = 0.01
+        # Enforce 128-dim latent to match Teacher's scan encoder
+        # [hidden_1, hidden_2, latent_dim]
+        scan_encoder_dims = [128, 64, 128]
+        beta_dagger = False
+        dagger_beta = 0.999
+        dagger_decay = 0.9999 # Decay per step or iteration? usually per iteration.
     class depth_encoder( LeggedRobotCfgPPO.depth_encoder ):
         if_depth = True
         learning_rate = 1e-3
@@ -283,3 +263,4 @@ class Go2StudentParkourCfgPPO( LeggedRobotCfgPPO ):
         resume = True
         load_run = -1  # Override via --load_run for training
         checkpoint = -1  # Use latest checkpoint
+        max_iterations = 20000

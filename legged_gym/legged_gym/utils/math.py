@@ -42,6 +42,14 @@ def quat_apply_yaw(quat, vec):
     return quat_apply(quat_yaw, vec)
 
 # @ torch.jit.script
+def quat_apply_yaw_inverse(quat, vec):
+    quat_yaw = quat.clone().view(-1, 4)
+    quat_yaw[:, :2] = 0.
+    quat_yaw = normalize(quat_yaw)
+    quat_yaw[:, 3] = -quat_yaw[:, 3]
+    return quat_apply(quat_yaw, vec)
+
+# @ torch.jit.script
 def wrap_to_pi(angles):
     angles %= 2*np.pi
     angles -= 2*np.pi * (angles > np.pi)

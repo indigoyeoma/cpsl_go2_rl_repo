@@ -101,18 +101,34 @@ def parse_sim_params(args, cfg):
     return sim_params
 
 def get_load_path(root, load_run=-1, checkpoint=-1, model_name_include="model"):
-    # If load_run is a full path, use it directly
-    if load_run != -1 and isinstance(load_run, str) and os.path.isdir(load_run):
-        root = load_run
-    elif not os.path.isdir(root):  # use first 4 chars to match the run name
+    # If load_run is a full path, use it directly (or check relative to CWD)
+    if load_run != -1 and isinstance(load_run, str):
+        if os.path.isdir(load_run):
+            root = load_run
+        # Check if relative to LEGGED_GYM_ROOT_DIR
+        elif os.path.isdir(os.path.join(LEGGED_GYM_ROOT_DIR, load_run)):
+            root = os.path.join(LEGGED_GYM_ROOT_DIR, load_run)
+        # Check if relative to LEGGED_GYM_ROOT_DIR/logs (common pattern)
+        elif os.path.isdir(os.path.join(LEGGED_GYM_ROOT_DIR, 'logs', load_run)):
+             root = os.path.join(LEGGED_GYM_ROOT_DIR, 'logs', load_run)
+
+    if not os.path.isdir(root):  # use first 4 chars to match the run name
         model_name_cand = os.path.basename(root)
         model_parent = os.path.dirname(root)
-        model_names = os.listdir(model_parent)
-        model_names = [name for name in model_names if os.path.isdir(os.path.join(model_parent, name))]
-        for name in model_names:
-            if len(name) >= 6:
-                if name[:6] == model_name_cand:
-                    root = os.path.join(model_parent, name)
+        if model_parent == '': # Handle case where root is just a run name in default dir
+             model_parent = root # This part of logic is a bit legacy, usually root comes from args.proj_name construction in train.py
+
+        # But wait, train.py constructs log_pth from LEGGED_GYM_ROOT_DIR + logs... so root passed in IS usually a valid path if load_run is -1.
+        # If load_run IS passed, we just overwrote root above if it was found.
+        # If it wasn't found above, we might be here.
+        
+        if os.path.isdir(model_parent):
+            model_names = os.listdir(model_parent)
+            model_names = [name for name in model_names if os.path.isdir(os.path.join(model_parent, name))]
+            for name in model_names:
+                if len(name) >= 6:
+                    if name[:6] == model_name_cand:
+                        root = os.path.join(model_parent, name)
 
     print(f"Looking for checkpoints in: {root}")
 
@@ -197,7 +213,7 @@ def update_cfg_from_args(env_cfg, cfg_train, args):
 
 def get_args():
     custom_parameters = [
-        {"name": "--task", "type": str, "default": "a1", "help": "Resume training or start testing from a checkpoint. Overrides config file if provided."},
+        {"name": "--task", "type": str, "default": "go2", "help": "Resume training or start testing from a checkpoint. Overrides config file if provided."},
         {"name": "--resume", "action": "store_true", "default": False,  "help": "Resume training from a checkpoint"},
         {"name": "--experiment_name", "type": str,  "help": "Name of the experiment to run or load. Overrides config file if provided."},
         {"name": "--run_name", "type": str,  "help": "Name of the run. Overrides config file if provided."},
@@ -235,7 +251,7 @@ def get_args():
         {"name": "--hitid", "type": str, "default": None, "help": "exptid fot hitting policy"},
 
         {"name": "--web", "action": "store_true", "default": False, "help": "if use web viewer"},
-        {"name": "--no_wandb", "action": "store_true", "default": False, "help": "no wandb"}
+        {"name": "--use_wandb", "action": "store_true", "default": False, "help": "enable wandb logging"}
 
 
     ]

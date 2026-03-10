@@ -1,6 +1,6 @@
 # SPDX-FileCopyrightText: Copyright (c) 2021 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: BSD-3-Clause
-# 
+#
 # Redistribution and use in source and binary forms, with or without
 # modification, are permitted provided that the following conditions are met:
 #
@@ -53,10 +53,10 @@ def train(args):
         args.num_envs = 64
     else:
         mode = "online"
-    
-    if args.no_wandb:
+
+    if not args.use_wandb:
         mode = "disabled"
-    wandb.init(project=args.proj_name, name=args.exptid, entity="parkour", group=args.exptid[:3], mode=mode, dir="../../logs")
+    wandb.init(project=args.proj_name, name=args.exptid, group=args.exptid[:3], mode=mode, dir="../../logs")
     wandb.save(LEGGED_GYM_ENVS_DIR + "/base/legged_robot_config.py", policy="now")
     wandb.save(LEGGED_GYM_ENVS_DIR + "/base/legged_robot.py", policy="now")
 

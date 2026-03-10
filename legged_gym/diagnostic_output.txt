@@ -1,0 +1,10 @@
+Iter 0: depth_encoder_grad=11.487801, depth_actor_grad=78.518980, loss=2.9742
+Iter 1: depth_encoder_grad=47.647276, depth_actor_grad=142.115474, loss=3.4143
+Iter 2: depth_encoder_grad=39.991128, depth_actor_grad=101.514569, loss=3.5811
+Iter 3: depth_encoder_grad=25.222953, depth_actor_grad=82.046462, loss=2.8162
+Iter 4: depth_encoder_grad=31.861224, depth_actor_grad=30.892977, loss=2.9363
+Iter 5: depth_encoder_grad=22.704320, depth_actor_grad=64.934038, loss=3.1920
+Iter 6: depth_encoder_grad=18.994466, depth_actor_grad=75.611666, loss=3.3373
+Iter 7: depth_encoder_grad=24.454853, depth_actor_grad=50.808673, loss=3.3949
+Iter 8: depth_encoder_grad=30.743002, depth_actor_grad=40.395784, loss=3.5075
+Iter 9: depth_encoder_grad=56.428734, depth_actor_grad=36.892707, loss=4.4742
