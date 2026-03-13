@@ -97,7 +97,7 @@ class LeggedRobot(BaseTask):
         self._parse_cfg(self.cfg)
         super().__init__(self.cfg, sim_params, physics_engine, sim_device, headless)
 
-        self.resize_transform = torchvision.transforms.Resize((self.cfg.depth.resized[1], self.cfg.depth.resized[0]), 
+        self.resize_transform = torchvision.transforms.Resize((self.cfg.depth.resized[1], self.cfg.depth.resized[0]),
                                                               interpolation=torchvision.transforms.InterpolationMode.BICUBIC)
         
         if not self.headless:
@@ -168,11 +168,6 @@ class LeggedRobot(BaseTask):
         # These operations are replicated on the hardware
         depth_image = self.crop_depth_image(depth_image)
         depth_image += self.cfg.depth.dis_noise * 2 * (torch.rand(1)-0.5)[0]
-
-        # Add stereo depth camera noise (D435i simulation) for sim-to-real transfer
-        if self.cfg.noise.add_noise:
-            depth_image = self._add_stereo_noise(depth_image)
-
         depth_image = torch.clip(depth_image, -self.cfg.depth.far_clip, -self.cfg.depth.near_clip)
         depth_image = self.resize_transform(depth_image[None, :]).squeeze()
         depth_image = self.normalize_depth_image(depth_image)
@@ -280,11 +275,11 @@ class LeggedRobot(BaseTask):
         self.gym.start_access_image_tensors(self.sim)
 
         for i in range(self.num_envs):
-            depth_image_ = self.gym.get_camera_image_gpu_tensor(self.sim, 
-                                                                self.envs[i], 
+            depth_image_ = self.gym.get_camera_image_gpu_tensor(self.sim,
+                                                                self.envs[i],
                                                                 self.cam_handles[i],
                                                                 gymapi.IMAGE_DEPTH)
-            
+
             depth_image = gymtorch.wrap_tensor(depth_image_)
             depth_image = self.process_depth_image(depth_image, i)
 
@@ -1257,9 +1252,9 @@ class LeggedRobot(BaseTask):
             for i in range(4):
                 pose = gymapi.Transform(gymapi.Vec3(feet_pos[self.lookat_id, i, 0], feet_pos[self.lookat_id, i, 1], feet_pos[self.lookat_id, i, 2]), r=None)
                 if self.feet_at_edge[self.lookat_id, i]:
-                    gymutil.draw_lines(edge_geom, self.gym, self.viewer, self.envs[i], pose)
+                    gymutil.draw_lines(edge_geom, self.gym, self.viewer, self.envs[self.lookat_id], pose)
                 else:
-                    gymutil.draw_lines(non_edge_geom, self.gym, self.viewer, self.envs[i], pose)
+                    gymutil.draw_lines(non_edge_geom, self.gym, self.viewer, self.envs[self.lookat_id], pose)
     
     def _init_height_points(self):
         """ Returns points at which the height measurments are sampled (in base frame)

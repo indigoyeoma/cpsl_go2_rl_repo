@@ -7,8 +7,9 @@ from legged_gym.envs.base.legged_robot_config import LeggedRobotCfg, LeggedRobot
 
 class Go2StudentParkourCfg( LeggedRobotCfg ):
     class env( LeggedRobotCfg.env ):
+        num_envs = 192
         # Proprio history for temporal info (gait phase, acceleration, contacts)
-        # Flattened as MLP input (no RNN) - matches teacher config
+        # Flattened 1zas MLP input (no RNN) - matches teacher config
         history_len = 10
         history_encoding = True
 
@@ -60,9 +61,7 @@ class Go2StudentParkourCfg( LeggedRobotCfg ):
         # dof_velocity_override = 35.  # Max joint velocity [rad/s]
 
     class noise( LeggedRobotCfg.noise ):
-        # Enable sensor noise for sim-to-real transfer
-        # Values calibrated from real-world measurements (parkour repo)
-        add_noise = True
+        add_noise = False
         noise_level = 1.0  # Global scaling factor for all noise
         quantize_height = True  # Quantize height measurements to simulate LiDAR resolution
 
@@ -116,15 +115,15 @@ class Go2StudentParkourCfg( LeggedRobotCfg ):
 
         # D435i mounted on robot's head (matched to go2_with_camera.urdf)
         # Position relative to base_link: [forward, left/right, up]
-        # From URDF: xyz="0.34 -0.00 0.08" rpy="0 0.45 0"
+        # From URDF: xyz="0.34 -0.00 0.09" rpy="0 0.00 0"
         position = dict(
-            mean=[0.34, 0.0, 0.09],       # Camera position from URDF
-            std=[0.01, 0.0025, 0.03],     # Domain randomization (same as parkour)
+            mean=[0.34, 0.0, 0.09],       # Camera position from URDF: xyz="0.34 -0.00 0.09"
+            std=[0.01, 0.0025, 0.03],     # Domain randomization
         )
-        # Rotation [roll, pitch, yaw] - 0 rad (0°) pitch matched to URDF
+        # Rotation [roll, pitch, yaw] - camera looks straight forward (pitch=0)
         rotation = dict(
-            lower=[-0.1, -0.05, -0.1],     # Pitch centered at 0 rad with ±0.05 variation
-            upper=[0.1, 0.05, 0.1],       # ±0.1 rad (~6°) roll/yaw, ±0.05 pitch
+            lower=[-0.1, -0.1, -0.1],
+            upper=[0.1, 0.1, 0.1],
         )
 
 
@@ -132,7 +131,7 @@ class Go2StudentParkourCfg( LeggedRobotCfg ):
         # D435i specifications (matched to parkour distill config)
         # parkour: resolution = [int(480/4), int(640/4)] = [120, 160]
         original = (160, 120)  # 640/4 x 480/4 (width, height)
-        resized = (128, 96)    # Go2 depth resolution
+        resized = (87, 58)     # Match extreme-parkour resolution
         horizontal_fov = 87    # D435i horizontal FOV: 87°
 
         # Cropping settings (matched to parkour)
@@ -143,13 +142,12 @@ class Go2StudentParkourCfg( LeggedRobotCfg ):
         crop_left = 7     # parkour uses 28/4 = 7
         crop_right = 9    # parkour uses 36/4 = 9
 
-        # D435i depth range: 0.3m (min) to 3m (optimal max)
-        near_clip = 0.3  # D435i minimum depth distance
-        far_clip = 3.0   # D435i maximum reliable depth distance
+        near_clip = 0
+        far_clip = 2
 
-        buffer_len = 1
+        buffer_len = 2
 
-        update_interval = 4  # Camera update frequency
+        update_interval = 5  # Camera update frequency
         dis_noise = 0.01  # Depth sensor noise for sim-to-real (applied in env)
 
         scale = 1
@@ -227,33 +225,14 @@ class Go2StudentParkourCfg( LeggedRobotCfg ):
 class Go2StudentParkourCfgPPO( LeggedRobotCfgPPO ):
     class algorithm( LeggedRobotCfgPPO.algorithm ):
         entropy_coef = 0.01
-        # Enforce 128-dim latent to match Teacher's scan encoder
-        # [hidden_1, hidden_2, latent_dim]
-        scan_encoder_dims = [128, 64, 128]
-        beta_dagger = False
-        dagger_beta = 0.999
-        dagger_decay = 0.9999 # Decay per step or iteration? usually per iteration.
+        priv_reg_coef_schedual_resume = [0, 0.1, 0, 1]
     class depth_encoder( LeggedRobotCfgPPO.depth_encoder ):
-        if_depth = True
+        if_depth = True  # Go2 student always uses camera
+        depth_shape = Go2StudentParkourCfg.depth.resized
+        buffer_len = Go2StudentParkourCfg.depth.buffer_len
+        hidden_dims = 512
         learning_rate = 1e-3
-        num_steps_per_env = 24
-
-        # === Depth Augmentation for Sim-to-Real Transfer ===
-        # Disabled to match parkour repo approach (stereo noise in env is sufficient)
-        # Parkour uses only stereo noise in environment, not extra augmentation in training
-        use_depth_augmentation = False
-
-        # DepthAugmentation parameters (from depth_backbone.py)
-        class augmentation:
-            dropout_prob = 0.02        # Probability of dropping each pixel (sensor failures)
-            noise_std = 0.03           # Gaussian noise std (in normalized depth units)
-            cutout_prob = 0.2          # Probability of applying rectangular cutout
-            cutout_size_range = (5, 15)  # Min/max cutout size (pixels)
-            edge_noise_prob = 0.3      # Probability of adding edge noise
-            edge_noise_std = 0.05      # Noise std at depth discontinuities
-            depth_scale_range = (0.95, 1.05)  # Random depth scaling (calibration errors)
-            flip_prob = 0.0            # Horizontal flip prob (0 for locomotion - asymmetric)
-            hole_value = -0.5          # Value to fill holes with (far clip)
+        num_steps_per_env = Go2StudentParkourCfg.depth.update_interval * 24
 
     class runner( LeggedRobotCfgPPO.runner ):
         run_name = ''
@@ -263,4 +242,5 @@ class Go2StudentParkourCfgPPO( LeggedRobotCfgPPO ):
         resume = True
         load_run = -1  # Override via --load_run for training
         checkpoint = -1  # Use latest checkpoint
-        max_iterations = 20000
+        max_iterations = 50000
+        save_interval = 100

@@ -1215,8 +1215,8 @@ Stephen Brawner (brawner@gmail.com)
       xyz="0 0 0" />
   </joint>
   <!-- D435i Depth Camera (matches go2_student_config.py) -->
-  <!-- Position: [0.24, -0.0175, 0.12] = 24cm forward, 1.75cm right, 12cm up -->
-  <!-- Pitch: 23° down (middle of 21-25° range) = -0.40 rad -->
+  <!-- Position: [0.34, 0.00, 0.09] = 34cm forward, 0cm side, 9cm up -->
+  <!-- Pitch: 0 (looking straight forward) -->
   <!-- Official mesh from: https://github.com/IntelRealSense/realsense-ros -->
   <link
     name="d435i_camera">
@@ -1234,31 +1234,15 @@ Stephen Brawner (brawner@gmail.com)
         iyz="0"
         izz="1e-05" />
     </inertial>
-    <visual>
-      <!-- Mesh origin at front plate between IR cameras, rotated to align -->
-      <origin
-        xyz="0.0043 0 0"
-        rpy="1.5708 0 1.5708" />
-      <geometry>
-        <mesh filename="../meshes/d435.dae" />
-      </geometry>
-    </visual>
-    <collision>
-      <origin
-        xyz="0 0 0"
-        rpy="0 0 0" />
-      <geometry>
-        <!-- D435 dimensions: depth=25mm, width=90mm, height=25mm -->
-        <box size="0.045 0.090 0.025" />
-      </geometry>
-    </collision>
+    <!-- Visual and collision removed: d435.dae mesh was 4mm in front of sensor,
+         occluding every camera ray and producing an all-black depth image. -->
   </link>
   <joint
     name="d435i_camera_joint"
     type="fixed">
     <origin
       xyz="0.34 -0.00 0.09"
-      rpy="0 0.0 0" />
+      rpy="0 0.00 0" />
     <parent
       link="base" />
     <child
@@ -1267,7 +1251,3 @@ Stephen Brawner (brawner@gmail.com)
       xyz="0 0 0" />
   </joint>
 </robot>
-
-
-      <!-- xyz="0.34 -0.00 0.09" -->
-      <!-- rpy="0 0.00 0" /> -->
